@@ -97,6 +97,37 @@
   .chatInputBar { display:flex; gap:8px; margin-top:10px; }
   .chatBack { background:none; border:none; color:#C9A227; cursor:pointer; font-size:14px; padding:6px 0; }
   .actionBtn.bookmarked { color:#C9A227; }
+  .vBadge { color:#4E9BF5; font-size:13px; }
+  .strongText { color:#ECE8DD; }
+  .quoteCard { border:1px solid #262B33; border-radius:12px; padding:10px 12px; margin-top:8px; font-size:14px; }
+  .pollBox { margin-top:10px; display:flex; flex-direction:column; gap:6px; }
+  .pollOpt { position:relative; overflow:hidden; display:flex; justify-content:space-between; align-items:center; border:1px solid #2A2F38; background:transparent; color:inherit; border-radius:10px; padding:9px 12px; cursor:pointer; font-size:14px; text-align:left; width:100%; }
+  .pollOpt.mine { border-color:#C9A227; }
+  .pollFill { position:absolute; left:0; top:0; bottom:0; background:rgba(201,162,39,0.18); }
+  .pollLabel, .pollPct { position:relative; }
+  .coverWrap { position:relative; height:130px; border-radius:12px; overflow:hidden; background:#171B21; margin-bottom:12px; border:1px solid #262B33; }
+  .coverImg { width:100%; height:100%; object-fit:cover; display:block; }
+  .coverBtn { position:absolute; top:8px; right:8px; background:rgba(14,17,22,0.75); color:#ECE8DD; border:none; border-radius:8px; padding:6px 10px; cursor:pointer; font-size:13px; }
+
+  /* Açık tema */
+  body.light { background:#F3F1EA; color:#1B1B1B; }
+  body.light .card, body.light .trendBox { background:#FFFFFF; border-color:#E0DCD0; }
+  body.light input, body.light textarea { background:#FFFFFF; border-color:#D6D1C4; color:#1B1B1B; }
+  body.light .navBtn { color:#1B1B1B; }
+  body.light .navBtn.active { background:#EAE6DA; color:#A8861D; }
+  body.light #sidebar { border-right-color:#E4E0D5; }
+  body.light .postCard, body.light .notifItem, body.light .dmRow, body.light .userResultRow, body.light .feedTabs { border-color:#E4E0D5; }
+  body.light .divider { background:#E4E0D5; }
+  body.light .postText, body.light .linkName { color:#1B1B1B; }
+  body.light .smallBtn { background:#EAE6DA; color:#1B1B1B; }
+  body.light .bubbleThem { background:#E8E4D8; color:#1B1B1B; }
+  body.light .notifIcon { background:#EFEBDF; }
+  body.light .postImage, body.light .quoteCard, body.light .pollOpt, body.light .coverWrap { border-color:#E0DCD0; }
+  body.light .coverWrap { background:#EFEBDF; }
+  body.light .strongText { color:#1B1B1B; }
+  body.light .removeImgBtn { background:rgba(255,255,255,0.85); color:#1B1B1B; }
+  body.light .feedTab.active { color:#A8861D; border-bottom-color:#A8861D; }
+  body.light .editBioBtn, body.light .coverBtn { background:#EAE6DA; color:#1B1B1B; border-color:#D6D1C4; }
 </style>
 </head>
 <body>
@@ -142,6 +173,7 @@
     <button class="navBtn" id="navDMs">✉️<span class="navLabel" style="margin-left:8px;">Mesajlar</span><span class="navBadge hidden" id="dmBadge">0</span></button>
     <button class="navBtn" id="navSaved">🔖<span class="navLabel" style="margin-left:8px;">Kaydedilenler</span></button>
     <button class="navBtn" id="navProfile">👤<span class="navLabel" style="margin-left:8px;">Profilim</span></button>
+    <button class="navBtn" id="navTheme">🌓<span class="navLabel" style="margin-left:8px;">Tema</span></button>
     <button class="navBtn" id="navLogout">🚪<span class="navLabel" style="margin-left:8px;">Çıkış</span></button>
   </div>
   <div id="main">
@@ -190,6 +222,11 @@ let feedFilter = "all"; // "all" | "following"
 let dmsCache = [];
 let editingPostId = null;
 let chatDraft = "";
+let composerQuote = null; // alıntılanan söz id'si
+let composerPoll = null;  // ["seçenek1","seçenek2",...] veya null
+
+// Tema
+if (localStorage.getItem('soylemTheme') === 'light') document.body.classList.add('light');
 
 // ====== HELPERS ======
 function timeAgo(ts){
@@ -423,12 +460,25 @@ document.getElementById('navSearch').onclick = () => { view = { name: "search" }
 document.getElementById('navNotifs').onclick = () => { view = { name: "notifications" }; render(); markAllNotifsRead(); };
 document.getElementById('navDMs').onclick = () => { view = { name: "dms" }; render(); };
 document.getElementById('navSaved').onclick = () => { view = { name: "saved" }; render(); };
+document.getElementById('navTheme').onclick = () => {
+  document.body.classList.toggle('light');
+  localStorage.setItem('soylemTheme', document.body.classList.contains('light') ? 'light' : 'dark');
+};
 
 // ====== ACTIONS ======
+function pollReady(){
+  return composerPoll && composerPoll.map(s=>s.trim()).filter(Boolean).length >= 2;
+}
+function canPostNow(){
+  const ta = document.getElementById('composerText');
+  const t = ta ? ta.value.trim() : "";
+  return !!(t || composerImageData || composerQuote || pollReady());
+}
+
 async function postTweet(){
   const ta = document.getElementById('composerText');
   const text = ta.value.trim();
-  if ((!text && !composerImageData) || !currentUser) return;
+  if (!canPostNow() || !currentUser) return;
   ta.disabled = true;
   try {
     const data = {
@@ -439,9 +489,20 @@ async function postTweet(){
       retweets: [],
     };
     if (composerImageData) data.imageData = composerImageData;
+    if (composerQuote) data.quoteOf = composerQuote;
+    if (pollReady()) {
+      data.poll = composerPoll.map(s=>s.trim()).filter(Boolean);
+      data.pollVotes = {};
+    }
     await db.collection('posts').add(data);
+    if (composerQuote) {
+      const q = postsCache.find(p=>p.id===composerQuote);
+      if (q) createNotification(q.authorUid, 'quote', { postId: composerQuote });
+    }
     ta.value = "";
     composerImageData = null;
+    composerQuote = null;
+    composerPoll = null;
     render();
   } catch(e){ showError("Gönderilemedi, tekrar dene. (Resim çok büyük olabilir)"); }
   ta.disabled = false;
@@ -456,7 +517,7 @@ function preserveComposerTextAcrossRender(fn){
   if (newTa) {
     newTa.value = savedText;
     document.getElementById('charCount').textContent = 280 - savedText.length;
-    document.getElementById('postBtn').disabled = !savedText.trim() && !composerImageData;
+    document.getElementById('postBtn').disabled = !canPostNow();
   }
 }
 
@@ -580,6 +641,34 @@ async function loadComments(postId, silent){
   if (openReplyId === postId) render();
 }
 
+async function handleCoverPick(input){
+  const file = input.files[0];
+  if (!file || !currentUser) return;
+  try {
+    const dataUrl = await resizeImageFile(file, 900, 0.7);
+    await db.collection('users').doc(currentUser.uid).update({ coverURL: dataUrl });
+  } catch(e){ showError("Kapak yüklenemedi. (Dosya çok büyük olabilir)"); }
+  input.value = "";
+}
+
+async function voteOnPoll(postId, idx){
+  const post = postsCache.find(p=>p.id===postId);
+  if (!post || !post.poll) return;
+  const votes = post.pollVotes || {};
+  let myVote = -1;
+  post.poll.forEach((o,i)=>{ if ((votes[i]||[]).includes(currentUser.uid)) myVote = i; });
+  if (myVote === idx) return;
+  const upd = {};
+  upd['pollVotes.'+idx] = firebase.firestore.FieldValue.arrayUnion(currentUser.uid);
+  if (myVote >= 0) upd['pollVotes.'+myVote] = firebase.firestore.FieldValue.arrayRemove(currentUser.uid);
+  try { await db.collection('posts').doc(postId).update(upd); }
+  catch(e){ showError("Oy verilemedi."); }
+}
+
+function verifiedBadge(u){
+  return (u && u.verified) ? ` <span class="vBadge" title="Onaylı hesap">✔</span>` : "";
+}
+
 async function toggleFollow(targetUid){
   if (targetUid === currentUser.uid) return;
   const following = currentUser.following || [];
@@ -634,10 +723,25 @@ function render(){
     document.getElementById('postBtn').onclick = postTweet;
     document.getElementById('composerText').oninput = (e)=>{
       document.getElementById('charCount').textContent = 280 - e.target.value.length;
-      document.getElementById('postBtn').disabled = !e.target.value.trim() && !composerImageData;
+      document.getElementById('postBtn').disabled = !canPostNow();
     };
     document.getElementById('imgPickBtn').onclick = () => document.getElementById('composerImgInput').click();
     document.getElementById('composerImgInput').onchange = (e) => handleComposerImagePick(e.target);
+    document.getElementById('pollBtn').onclick = () => preserveComposerTextAcrossRender(() => {
+      composerPoll = composerPoll ? null : ["",""];
+    });
+    document.querySelectorAll('[data-pollopt]').forEach(el=>{
+      el.oninput = (e) => {
+        composerPoll[parseInt(el.getAttribute('data-pollopt'))] = e.target.value;
+        document.getElementById('postBtn').disabled = !canPostNow();
+      };
+    });
+    const pollAddBtn = document.getElementById('pollAddBtn');
+    if (pollAddBtn) pollAddBtn.onclick = () => preserveComposerTextAcrossRender(() => { composerPoll.push(""); });
+    const pollRemoveBtn = document.getElementById('pollRemoveBtn');
+    if (pollRemoveBtn) pollRemoveBtn.onclick = () => preserveComposerTextAcrossRender(() => { composerPoll = null; });
+    const removeQuoteBtn = document.getElementById('removeQuoteBtn');
+    if (removeQuoteBtn) removeQuoteBtn.onclick = () => preserveComposerTextAcrossRender(() => { composerQuote = null; });
     const removeBtn = document.getElementById('removeImgBtn');
     if (removeBtn) removeBtn.onclick = removeComposerImage;
     document.querySelectorAll('[data-feedtab]').forEach(el=>{
@@ -652,6 +756,12 @@ function render(){
     if (followBtn) followBtn.onclick = () => toggleFollow(view.user);
     const msgBtn = document.getElementById('msgBtn');
     if (msgBtn) msgBtn.onclick = () => { chatDraft = ""; view = { name:'chat', user: view.user }; render(); };
+    const coverBtn = document.getElementById('coverBtn');
+    const coverInput = document.getElementById('coverInput');
+    if (coverBtn && coverInput) {
+      coverBtn.onclick = () => coverInput.click();
+      coverInput.onchange = (e) => handleCoverPick(e.target);
+    }
     const photoBtn = document.getElementById('profilePhotoBtn');
     const photoInput = document.getElementById('profilePhotoInput');
     if (photoBtn && photoInput) {
@@ -717,13 +827,30 @@ function renderFeed(){
             <img src="${composerImageData}" />
             <button class="removeImgBtn" id="removeImgBtn">✕</button>
           </div>` : ""}
+        ${composerQuote ? (() => {
+          const q = postsCache.find(x=>x.id===composerQuote);
+          const qa = q ? (usersCache[q.authorUid]||{displayName:"Bilinmeyen"}) : null;
+          return `<div class="quoteCard" style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+            <span style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">❝ ${q ? `<b>${esc(qa.displayName)}</b>: ${esc((q.text||"📷 resim"))}` : "Söz bulunamadı"}</span>
+            <button class="smallBtn" id="removeQuoteBtn" style="flex-shrink:0;">✕</button>
+          </div>`;
+        })() : ""}
+        ${composerPoll ? `
+          <div style="margin-top:10px; display:flex; flex-direction:column; gap:6px;">
+            ${composerPoll.map((v,i)=>`<input data-pollopt="${i}" placeholder="Seçenek ${i+1}" maxlength="40" value="${esc(v)}" />`).join("")}
+            <div style="display:flex; gap:8px;">
+              ${composerPoll.length < 4 ? `<button class="smallBtn" id="pollAddBtn">+ Seçenek</button>` : ""}
+              <button class="smallBtn" id="pollRemoveBtn" style="background:transparent; border:1px solid #2A2F38;">Anketi kaldır</button>
+            </div>
+          </div>` : ""}
         <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
           <div class="composerToolbar">
             <button class="imgPickBtn" id="imgPickBtn" title="Resim ekle">🖼</button>
+            <button class="imgPickBtn" id="pollBtn" title="Anket ekle">📊</button>
             <input type="file" accept="image/*" id="composerImgInput" class="hidden" />
             <span class="dim" id="charCount">280</span>
           </div>
-          <button class="btnPrimary" id="postBtn" style="width:auto; padding:8px 18px; margin:0;" ${(!composerImageData) ? "disabled" : ""}>Paylaş</button>
+          <button class="btnPrimary" id="postBtn" style="width:auto; padding:8px 18px; margin:0;" ${(!composerImageData && !composerQuote && !pollReady()) ? "disabled" : ""}>Paylaş</button>
         </div>
       </div>
     </div>
@@ -802,6 +929,13 @@ function renderProfile(uid){
     `;
   }
   let html = `
+    <div class="coverWrap">
+      ${u.coverURL ? `<img class="coverImg" src="${u.coverURL}" />` : ""}
+      ${isMe ? `
+        <button class="coverBtn" id="coverBtn">📷 Kapak</button>
+        <input type="file" accept="image/*" id="coverInput" class="hidden" />
+      ` : ""}
+    </div>
     <div class="profileHeader">
       <div class="avatarWrap">
         ${avatarHTML(u.displayName, 64, "", u.photoURL)}
@@ -811,11 +945,11 @@ function renderProfile(uid){
         ` : ""}
       </div>
       <div style="flex:1;">
-        <div class="profileName">${esc(u.displayName)}</div>
+        <div class="profileName">${esc(u.displayName)}${verifiedBadge(u)}</div>
         ${bioHTML}
         <div style="display:flex; gap:16px; margin-top:8px;">
-          <span class="dim"><b style="color:#ECE8DD;">${(u.following||[]).length}</b> takip</span>
-          <span class="dim"><b style="color:#ECE8DD;">${followerCount}</b> takipçi</span>
+          <span class="dim"><b class="strongText">${(u.following||[]).length}</b> takip</span>
+          <span class="dim"><b class="strongText">${followerCount}</b> takipçi</span>
         </div>
       </div>
       ${!isMe ? `
@@ -863,7 +997,7 @@ function renderPost(p){
         ${avatarHTML(author.displayName, 40, `data-profile="${p.authorUid}"`, author.photoURL)}
         <div style="flex:1; min-width:0;">
           <div style="display:flex; align-items:baseline; gap:6px; flex-wrap:wrap;">
-            <button class="linkName" data-profile="${p.authorUid}">${esc(author.displayName)}</button>
+            <button class="linkName" data-profile="${p.authorUid}">${esc(author.displayName)}${verifiedBadge(author)}</button>
             <span class="dim">· ${timeAgo(p.createdAt)}</span>
             ${p.authorUid===currentUser.uid ? `<button class="iconGhost" data-edit="${p.id}" title="Düzenle">✏️</button><button class="iconGhost" data-delete="${p.id}" title="Sil">🗑</button>` : ""}
           </div>
@@ -877,9 +1011,12 @@ function renderPost(p){
             </div>`
           : (p.text ? `<div class="postText">${linkify(p.text)}${p.edited ? ` <span class="dim" style="font-size:11px;">(düzenlendi)</span>` : ""}</div>` : "")}
           ${p.imageData ? `<img class="postImage" src="${p.imageData}" />` : ""}
+          ${p.quoteOf ? renderQuoteEmbed(p.quoteOf) : ""}
+          ${p.poll ? renderPoll(p) : ""}
           <div class="actions">
             <button class="actionBtn" data-reply="${p.id}">💬 ${comments.length || ''}</button>
             <button class="actionBtn ${retweeted?'retweeted':''}" data-retweet="${p.id}">🔁 ${(p.retweets||[]).length}</button>
+            <button class="actionBtn" data-quote="${p.id}" title="Alıntıla">❝</button>
             <button class="actionBtn ${liked?'liked':''}" data-like="${p.id}">❤ ${(p.likes||[]).length}</button>
             <button class="actionBtn ${bookmarked?'bookmarked':''}" data-bookmark="${p.id}">🔖</button>
           </div>
@@ -888,6 +1025,40 @@ function renderPost(p){
       </div>
     </div>
   `;
+}
+
+function renderQuoteEmbed(quoteId){
+  const q = postsCache.find(x=>x.id===quoteId);
+  if (!q) return `<div class="quoteCard dim">Alıntılanan söz silinmiş.</div>`;
+  const a = usersCache[q.authorUid] || { displayName: "Bilinmeyen" };
+  return `
+    <div class="quoteCard">
+      <b>${esc(a.displayName)}</b>${verifiedBadge(a)} <span class="dim">· ${timeAgo(q.createdAt)}</span>
+      ${q.text ? `<div style="margin-top:4px;">${linkify(q.text)}</div>` : ""}
+      ${q.imageData ? `<img class="postImage" src="${q.imageData}" style="max-height:200px;" />` : ""}
+    </div>`;
+}
+
+function renderPoll(p){
+  const votes = p.pollVotes || {};
+  let myVote = -1, total = 0;
+  p.poll.forEach((o,i)=>{
+    const arr = votes[i] || [];
+    total += arr.length;
+    if (arr.includes(currentUser.uid)) myVote = i;
+  });
+  const showResults = myVote >= 0 || p.authorUid === currentUser.uid;
+  return `<div class="pollBox">` + p.poll.map((o,i)=>{
+    const n = (votes[i]||[]).length;
+    const pct = total ? Math.round(n*100/total) : 0;
+    if (showResults) {
+      return `<button class="pollOpt ${i===myVote?'mine':''}" data-vote="${p.id}|${i}">
+        <div class="pollFill" style="width:${pct}%;"></div>
+        <span class="pollLabel">${esc(o)}${i===myVote?' ✓':''}</span><span class="pollPct">${pct}%</span>
+      </button>`;
+    }
+    return `<button class="pollOpt" data-vote="${p.id}|${i}"><span class="pollLabel">${esc(o)}</span></button>`;
+  }).join("") + `<div class="dim" style="margin-top:2px;">${total} oy</div></div>`;
 }
 
 function bindPostEvents(){
@@ -905,6 +1076,20 @@ function bindPostEvents(){
   });
   document.querySelectorAll('[data-bookmark]').forEach(el=>{
     el.onclick = () => toggleBookmark(el.getAttribute('data-bookmark'));
+  });
+  document.querySelectorAll('[data-quote]').forEach(el=>{
+    el.onclick = () => {
+      composerQuote = el.getAttribute('data-quote');
+      view = { name: 'feed' };
+      render();
+      window.scrollTo(0, 0);
+    };
+  });
+  document.querySelectorAll('[data-vote]').forEach(el=>{
+    el.onclick = () => {
+      const [postId, idx] = el.getAttribute('data-vote').split('|');
+      voteOnPoll(postId, parseInt(idx));
+    };
   });
   document.querySelectorAll('[data-edit]').forEach(el=>{
     el.onclick = () => { editingPostId = el.getAttribute('data-edit'); render(); };
@@ -1040,12 +1225,14 @@ function notifText(n){
   if (n.type === 'like') return `<b>${name}</b> sözünü beğendi`;
   if (n.type === 'comment') return `<b>${name}</b> sözüne yanıt yazdı`;
   if (n.type === 'follow') return `<b>${name}</b> seni takip etmeye başladı`;
+  if (n.type === 'quote') return `<b>${name}</b> sözünü alıntıladı`;
   return `<b>${name}</b> bir işlem yaptı`;
 }
 function notifIcon(type){
   if (type === 'like') return '❤';
   if (type === 'comment') return '💬';
   if (type === 'follow') return '➕';
+  if (type === 'quote') return '❝';
   return '🔔';
 }
 function renderNotifications(){

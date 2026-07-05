@@ -148,6 +148,9 @@
     <div id="signupNameField" class="hidden" style="margin-bottom:10px;">
       <input id="displayNameInput" placeholder="Görünen adın" maxlength="30" />
     </div>
+    <div id="signupUsernameField" class="hidden" style="margin-bottom:10px;">
+      <input id="usernameInput" placeholder="kullaniciadi (3-15: harf, rakam, _)" maxlength="15" autocapitalize="none" autocorrect="off" />
+    </div>
     <div style="margin-bottom:10px;">
       <input id="emailInput" type="email" placeholder="E-posta" autocomplete="email" />
     </div>
@@ -157,6 +160,7 @@
     <div class="err" id="authError"></div>
     <button class="btnPrimary" id="authSubmitBtn">Giriş yap</button>
     <button class="toggleAuth" id="toggleAuthMode">Hesabın yok mu? Kayıt ol</button>
+    <button class="toggleAuth" id="forgotPassBtn" style="display:block; margin:10px auto 0; text-decoration:none; color:#8B8F98;">Şifreni mi unuttun?</button>
     <p class="note">Gerçek hesap — e-posta ve şifreyle korunuyor.</p>
   </div>
 </div>
@@ -225,6 +229,8 @@ let chatDraft = "";
 let composerQuote = null; // alıntılanan söz id'si
 let composerPoll = null;  // ["seçenek1","seçenek2",...] veya null
 let detailReturn = null;  // söz detayından geri dönülecek görünüm
+let editingUsername = false;
+let handledHash = false;  // sayfa açılışında #soz/ID linki bir kez işlensin
 
 // Tema
 if (localStorage.getItem('soylemTheme') === 'light') document.body.classList.add('light');
@@ -265,6 +271,9 @@ function linkify(text){
 function findUserByMention(tag){
   const t = (tag||"").toLowerCase();
   if (!t) return null;
+  for (const [id, u] of Object.entries(usersCache)) {
+    if ((u.username||"").toLowerCase() === t) return id;
+  }
   for (const [id, u] of Object.entries(usersCache)) {
     const dn = (u.displayName||"").toLowerCase().trim();
     if (dn.replace(/\s+/g,'') === t || dn.split(/\s+/)[0] === t) return id;
@@ -312,11 +321,19 @@ function showError(msg){
   el.textContent = msg; el.classList.remove('hidden');
   setTimeout(()=>el.classList.add('hidden'), 4000);
 }
+function showInfo(msg){
+  const el = document.getElementById('errorBanner');
+  el.textContent = msg;
+  el.style.background = '#1f3a24'; el.style.color = '#bfe3c2';
+  el.classList.remove('hidden');
+  setTimeout(()=>{ el.classList.add('hidden'); el.style.background=''; el.style.color=''; }, 3000);
+}
 
 // ====== AUTH UI ======
 document.getElementById('toggleAuthMode').onclick = () => {
   isSignup = !isSignup;
   document.getElementById('signupNameField').classList.toggle('hidden', !isSignup);
+  document.getElementById('signupUsernameField').classList.toggle('hidden', !isSignup);
   document.getElementById('authSubmitBtn').textContent = isSignup ? "Kayıt ol" : "Giriş yap";
   document.getElementById('toggleAuthMode').textContent = isSignup ? "Zaten hesabın var mı? Giriş yap" : "Hesabın yok mu? Kayıt ol";
   document.getElementById('authError').textContent = "";
@@ -329,14 +346,25 @@ document.getElementById('authSubmitBtn').onclick = async () => {
   const errEl = document.getElementById('authError');
   errEl.textContent = "";
 
+  errEl.style.color = "";
   if (!email || !password) { errEl.textContent = "E-posta ve şifre gerekli."; return; }
   if (isSignup && !displayName) { errEl.textContent = "Görünen ad gerekli."; return; }
+  let username = "";
+  if (isSignup) {
+    username = document.getElementById('usernameInput').value.trim().toLowerCase().replace(/^@/, '');
+    if (!/^[a-z0-9_]{3,15}$/.test(username)) {
+      errEl.textContent = "Kullanıcı adı 3-15 karakter olmalı; sadece küçük harf, rakam ve _ içerebilir.";
+      return;
+    }
+  }
 
   try {
     if (isSignup) {
+      const taken = await db.collection('users').where('username', '==', username).limit(1).get();
+      if (!taken.empty) { errEl.textContent = "Bu kullanıcı adı alınmış, başka bir tane dene."; return; }
       const cred = await auth.createUserWithEmailAndPassword(email, password);
       await db.collection('users').doc(cred.user.uid).set({
-        displayName, bio: "", following: [], createdAt: Date.now()
+        displayName, username, bio: "", following: [], createdAt: Date.now()
       });
     } else {
       await auth.signInWithEmailAndPassword(email, password);
@@ -359,6 +387,21 @@ function friendlyAuthError(code){
 }
 
 document.getElementById('navLogout').onclick = () => auth.signOut();
+
+// Şifre sıfırlama
+document.getElementById('forgotPassBtn').onclick = async () => {
+  const email = document.getElementById('emailInput').value.trim();
+  const errEl = document.getElementById('authError');
+  errEl.style.color = "";
+  if (!email) { errEl.textContent = "Önce yukarıya e-posta adresini yaz, sonra buna bas."; return; }
+  try {
+    await auth.sendPasswordResetEmail(email);
+    errEl.style.color = "#5E8C61";
+    errEl.textContent = "Sıfırlama bağlantısı e-postana gönderildi. Gelen kutunu (ve spam'i) kontrol et.";
+  } catch (e) {
+    errEl.textContent = friendlyAuthError(e.code);
+  }
+};
 
 // ====== AUTH STATE ======
 let unsubUsers = null, unsubPosts = null, unsubNotifs = null, unsubDMs = null;
@@ -396,6 +439,14 @@ function startListeners(){
 
   unsubPosts = db.collection('posts').orderBy('createdAt','desc').limit(100).onSnapshot(snap => {
     postsCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    if (!handledHash) {
+      handledHash = true;
+      const m = location.hash.match(/^#soz\/([A-Za-z0-9]+)/);
+      if (m && postsCache.find(p => p.id === m[1])) {
+        view = { name: 'postDetail', post: m[1] };
+        loadComments(m[1]);
+      }
+    }
     render();
   }, err => showError("Gönderiler yüklenemedi."));
 
@@ -480,6 +531,15 @@ async function markAllNotifsRead(){
 }
 
 // ====== NAV ======
+window.addEventListener('hashchange', () => {
+  const m = location.hash.match(/^#soz\/([A-Za-z0-9]+)/);
+  if (m && currentUser && !(view.name === 'postDetail' && view.post === m[1])) {
+    detailReturn = view;
+    view = { name: 'postDetail', post: m[1] };
+    render();
+    loadComments(m[1]);
+  }
+});
 document.getElementById('navFeed').onclick = () => { view = { name: "feed" }; render(); };
 document.getElementById('navProfile').onclick = () => { view = { name: "profile", user: currentUser.uid }; render(); };
 document.getElementById('navSearch').onclick = () => { view = { name: "search" }; render(); };
@@ -725,6 +785,24 @@ function fullTime(ts){
   return new Date(ts).toLocaleString('tr-TR', { day:'numeric', month:'long', year:'numeric', hour:'2-digit', minute:'2-digit' });
 }
 
+// Kullanıcı adı seçme
+async function saveUsername(){
+  const input = document.getElementById('usernameEditInput');
+  if (!input) return;
+  const username = input.value.trim().toLowerCase().replace(/^@/, '');
+  if (!/^[a-z0-9_]{3,15}$/.test(username)) {
+    showError("Kullanıcı adı 3-15 karakter olmalı; sadece küçük harf, rakam ve _ içerebilir.");
+    return;
+  }
+  try {
+    const taken = await db.collection('users').where('username', '==', username).limit(1).get();
+    if (!taken.empty) { showError("Bu kullanıcı adı alınmış, başka bir tane dene."); return; }
+    await db.collection('users').doc(currentUser.uid).update({ username });
+    editingUsername = false;
+    showInfo("Kullanıcı adın artık @" + username);
+  } catch(e){ showError("Kaydedilemedi, tekrar dene."); }
+}
+
 // Profil bio düzenleme
 async function saveBio(){
   const ta = document.getElementById('bioEditInput');
@@ -817,6 +895,12 @@ function render(){
     if (saveBioBtn) saveBioBtn.onclick = saveBio;
     const cancelBioBtn = document.getElementById('cancelBioBtn');
     if (cancelBioBtn) cancelBioBtn.onclick = () => { editingBio = false; render(); };
+    const editUsernameBtn = document.getElementById('editUsernameBtn');
+    if (editUsernameBtn) editUsernameBtn.onclick = () => { editingUsername = true; render(); };
+    const saveUsernameBtn = document.getElementById('saveUsernameBtn');
+    if (saveUsernameBtn) saveUsernameBtn.onclick = saveUsername;
+    const cancelUsernameBtn = document.getElementById('cancelUsernameBtn');
+    if (cancelUsernameBtn) cancelUsernameBtn.onclick = () => { editingUsername = false; render(); };
     document.querySelectorAll('[data-follows]').forEach(el=>{
       el.onclick = () => {
         const [uid, tab] = el.getAttribute('data-follows').split('|');
@@ -841,7 +925,7 @@ function render(){
     feedEl.classList.remove('hidden');
     feedEl.innerHTML = renderPostDetail(view.post);
     const back = document.getElementById('detailBack');
-    if (back) back.onclick = () => { view = detailReturn || { name:'feed' }; detailReturn = null; render(); };
+    if (back) back.onclick = () => { history.replaceState(null, '', location.pathname + location.search); view = detailReturn || { name:'feed' }; detailReturn = null; render(); };
     bindPostEvents();
   } else if (view.name === 'search') {
     searchEl.classList.remove('hidden');
@@ -1026,6 +1110,15 @@ function renderProfile(uid){
       </div>
       <div style="flex:1;">
         <div class="profileName">${esc(u.displayName)}${verifiedBadge(u)}</div>
+        ${u.username ? `<div class="dim">@${esc(u.username)}</div>` : ""}
+        ${isMe && !u.username ? (editingUsername ? `
+          <div class="bioEditBox">
+            <input id="usernameEditInput" maxlength="15" placeholder="kullaniciadi" autocapitalize="none" autocorrect="off" />
+            <div style="display:flex; gap:8px; margin-top:6px;">
+              <button class="smallBtn" id="saveUsernameBtn" style="background:#C9A227; color:#0E1116; font-weight:700;">Kaydet</button>
+              <button class="smallBtn" id="cancelUsernameBtn" style="background:transparent; border:1px solid #2A2F38;">İptal</button>
+            </div>
+          </div>` : `<button class="editBioBtn" id="editUsernameBtn">@ Kullanıcı adı seç</button>`) : ""}
         ${bioHTML}
         <div style="display:flex; gap:16px; margin-top:8px;">
           <span class="dim" style="cursor:pointer;" data-follows="${uid}|following"><b class="strongText">${(u.following||[]).length}</b> takip</span>
@@ -1138,6 +1231,7 @@ function renderPost(p){
             <button class="actionBtn" data-quote="${p.id}" title="Alıntıla">❝</button>
             <button class="actionBtn ${liked?'liked':''}" data-like="${p.id}">❤ ${(p.likes||[]).length}</button>
             <button class="actionBtn ${bookmarked?'bookmarked':''}" data-bookmark="${p.id}">🔖</button>
+            <button class="actionBtn" data-share="${p.id}" title="Bağlantıyı kopyala">🔗</button>
           </div>
           ${replyHTML}
         </div>
@@ -1199,7 +1293,7 @@ function renderPostDetail(postId){
         ${avatarHTML(author.displayName, 46, `data-profile="${p.authorUid}"`, author.photoURL)}
         <div style="flex:1; min-width:0;">
           <button class="linkName" data-profile="${p.authorUid}" style="font-size:15px;">${esc(author.displayName)}${verifiedBadge(author)}</button>
-          ${(usersCache[p.authorUid]||{}).bio ? `<div class="dim" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(usersCache[p.authorUid].bio)}</div>` : ""}
+          ${(usersCache[p.authorUid]||{}).username ? `<div class="dim">@${esc(usersCache[p.authorUid].username)}</div>` : ((usersCache[p.authorUid]||{}).bio ? `<div class="dim" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(usersCache[p.authorUid].bio)}</div>` : "")}
         </div>
         ${p.authorUid===currentUser.uid ? `<button class="iconGhost" data-pin="${p.id}" title="${currentUser.pinnedPost===p.id ? 'Sabitlemeyi kaldır' : 'Profilde sabitle'}" style="${currentUser.pinnedPost===p.id ? 'color:#C9A227;' : ''}">📌</button><button class="iconGhost" data-delete="${p.id}" title="Sil">🗑</button>` : ""}
       </div>
@@ -1215,6 +1309,7 @@ function renderPostDetail(postId){
         <button class="actionBtn" data-quote="${p.id}" title="Alıntıla">❝</button>
         <button class="actionBtn ${liked?'liked':''}" data-like="${p.id}">❤ ${(p.likes||[]).length}</button>
         <button class="actionBtn ${bookmarked?'bookmarked':''}" data-bookmark="${p.id}">🔖</button>
+        <button class="actionBtn" data-share="${p.id}" title="Bağlantıyı kopyala">🔗</button>
       </div>
       <div class="divider" style="margin:12px 0;"></div>
       <div style="font-weight:700; font-size:15px; margin-bottom:10px;">Yanıtlar ${comments.length ? `(${comments.length})` : ""}</div>
@@ -1280,10 +1375,26 @@ function bindPostEvents(){
   function openPostDetail(id){
     if (view.name !== 'postDetail') detailReturn = view;
     view = { name:'postDetail', post: id };
+    if (location.hash !== '#soz/' + id) history.replaceState(null, '', '#soz/' + id);
     render();
     loadComments(id);
     window.scrollTo(0, 0);
   }
+  document.querySelectorAll('[data-share]').forEach(el=>{
+    el.onclick = async () => {
+      const link = location.origin + location.pathname + '#soz/' + el.getAttribute('data-share');
+      try {
+        await navigator.clipboard.writeText(link);
+        showInfo("🔗 Söz bağlantısı kopyalandı.");
+      } catch(e) {
+        const ta = document.createElement('textarea');
+        ta.value = link; document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); showInfo("🔗 Söz bağlantısı kopyalandı."); }
+        catch(e2){ showError("Kopyalanamadı: " + link); }
+        ta.remove();
+      }
+    };
+  });
   document.querySelectorAll('[data-reply]').forEach(el=>{
     el.onclick = () => openPostDetail(el.getAttribute('data-reply'));
   });
@@ -1347,13 +1458,17 @@ function renderSearchResultsOnly(){
     return;
   }
 
-  const matches = Object.entries(usersCache).filter(([id, u]) => (u.displayName||"").toLowerCase().includes(q));
+  const qq = q.replace(/^@/, '');
+  const matches = Object.entries(usersCache).filter(([id, u]) =>
+    (u.displayName||"").toLowerCase().includes(qq) || (u.username||"").toLowerCase().includes(qq)
+  );
   el.innerHTML = matches.length
     ? matches.map(([id, u]) => `
         <div class="userResultRow" data-profile="${id}">
           ${avatarHTML(u.displayName, 44, "", u.photoURL)}
           <div>
             <div style="font-weight:700;">${esc(u.displayName)}</div>
+            ${u.username ? `<div class="dim">@${esc(u.username)}</div>` : ""}
             ${u.bio ? `<div class="dim">${esc(u.bio)}</div>` : ""}
           </div>
         </div>

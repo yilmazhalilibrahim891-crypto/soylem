@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Söylem</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background:#0E1116; font-family: system-ui, -apple-system, sans-serif; color:#ECE8DD; }
+  .hidden { display:none !important; }
+  .dim { color:#8B8F98; font-size:13px; }
+
+  /* Login */
+  #loginScreen { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .card { background:#171B21; border:1px solid #262B33; border-radius:14px; padding:36px 32px; width:100%; max-width:340px; text-align:center; }
+  .brand { font-family: Georgia, serif; font-size:28px; letter-spacing:0.5px; }
+  .brandRow { display:flex; align-items:center; gap:10px; justify-content:center; margin-bottom:6px; }
+  .sub { color:#8B8F98; font-size:14px; margin:2px 0 22px; }
+  input, textarea { width:100%; background:#0E1116; border:1px solid #2A2F38; border-radius:8px; padding:12px 14px; color:#ECE8DD; font-size:15px; outline:none; font-family:inherit; }
+  textarea { resize:none; }
+  .err { color:#D64550; font-size:12px; margin-top:6px; text-align:left; min-height:16px; }
+  .btnPrimary { width:100%; margin-top:10px; background:#C9A227; color:#0E1116; border:none; border-radius:8px; padding:12px 0; font-weight:700; font-size:14px; cursor:pointer; }
+  .btnPrimary:disabled { opacity:0.5; }
+  .toggleAuth { margin-top:16px; color:#C9A227; font-size:13px; cursor:pointer; background:none; border:none; text-decoration:underline; }
+  .note { color:#5B5F66; font-size:12px; margin-top:14px; line-height:1.5; }
+
+  /* App shell */
+  #appShell { display:flex; min-height:100vh; }
+  #sidebar { width:76px; border-right:1px solid #1D2128; padding:20px 8px; display:flex; flex-direction:column; align-items:center; position:sticky; top:0; height:100vh; }
+  @media(min-width:640px){ #sidebar{ width:200px; align-items:stretch; padding:20px 12px; } }
+  .navBtn { display:flex; align-items:center; gap:12px; background:transparent; color:#ECE8DD; border:none; border-radius:10px; padding:12px; font-size:15px; cursor:pointer; margin-bottom:4px; width:100%; justify-content:center; }
+  @media(min-width:640px){ .navBtn{ justify-content:flex-start; padding:12px 14px; } }
+  .navBtn.active { background:#1D2128; color:#C9A227; font-weight:700; }
+  .navLabel { display:none; }
+  @media(min-width:640px){ .navLabel{ display:inline; } }
+  #main { flex:1; max-width:640px; padding:20px 16px 60px; }
+  .composer { display:flex; gap:12px; }
+  .avatar { border-radius:50%; display:flex; align-items:center; justify-content:center; font-family:Georgia,serif; font-weight:700; color:#0E1116; flex-shrink:0; cursor:pointer; border:none; }
+  .divider { height:1px; background:#1D2128; margin:16px 0; }
+  .postCard { padding:14px 0; border-bottom:1px solid #1D2128; }
+  .postRow { display:flex; gap:12px; }
+  .linkName { background:none; border:none; color:#ECE8DD; font-weight:700; font-size:14px; cursor:pointer; padding:0; }
+  .postText { color:#ECE8DD; font-size:15px; margin-top:4px; line-height:1.45; white-space:pre-wrap; word-break:break-word; }
+  .actions { display:flex; gap:22px; margin-top:10px; }
+  .actionBtn { display:flex; align-items:center; gap:6px; background:none; border:none; cursor:pointer; padding:4px; color:#8B8F98; font-size:13px; }
+  .actionBtn.liked { color:#D64550; }
+  .actionBtn.retweeted { color:#5E8C61; }
+  .iconGhost { background:none; border:none; cursor:pointer; margin-left:4px; color:#8B8F98; }
+  .replyBox { margin-top:10px; }
+  .commentRow { display:flex; gap:8px; margin-bottom:10px; padding-left:6px; }
+  .replyInputRow { display:flex; gap:8px; margin-top:8px; }
+  .replyInputRow input { border-radius:16px; padding:8px 14px; font-size:13px; }
+  .smallBtn { background:#2A2F38; color:#ECE8DD; border:none; border-radius:16px; padding:6px 14px; font-size:13px; cursor:pointer; }
+  .followBtn { background:#C9A227; color:#0E1116; border:none; border-radius:20px; padding:8px 18px; font-weight:700; font-size:13px; cursor:pointer; }
+  .followingBtn { background:transparent; color:#C9A227; border:1px solid #C9A227; border-radius:20px; padding:8px 18px; font-weight:700; font-size:13px; cursor:pointer; }
+  .profileHeader { display:flex; gap:16px; align-items:flex-start; padding:10px 0; }
+  .profileName { font-size:20px; font-weight:700; font-family:Georgia,serif; }
+  .emptyState { color:#5B5F66; text-align:center; padding:60px 0; font-size:15px; }
+  .banner { background:#3a1f22; color:#f2c6ca; padding:8px 12px; border-radius:8px; margin-bottom:12px; font-size:13px; }
+  svg { display:block; }
+</style>
+</head>
+<body>
+
+<div id="loadingScreen" style="height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center;">
+  <svg width="40" height="40" viewBox="0 0 48 48" fill="none"><path d="M6 30 C 10 14, 20 8, 24 8 C 30 8, 30 16, 24 18 C 18 20, 14 16, 16 12 C 18 8, 26 6, 34 10 C 40 13, 42 20, 40 26" stroke="#C9A227" stroke-width="2.4" stroke-linecap="round" fill="none"/><circle cx="8" cy="34" r="2.2" fill="#C9A227"/><circle cx="12" cy="38" r="1.6" fill="#C9A227"/></svg>
+  <div class="dim" style="margin-top:12px; font-family:Georgia,serif;">Söylem yükleniyor…</div>
+</div>
+
+<div id="loginScreen" class="hidden">
+  <div class="card">
+    <div class="brandRow">
+      <svg width="36" height="36" viewBox="0 0 48 48" fill="none"><path d="M6 30 C 10 14, 20 8, 24 8 C 30 8, 30 16, 24 18 C 18 20, 14 16, 16 12 C 18 8, 26 6, 34 10 C 40 13, 42 20, 40 26" stroke="#C9A227" stroke-width="2.4" stroke-linecap="round" fill="none"/><circle cx="8" cy="34" r="2.2" fill="#C9A227"/><circle cx="12" cy="38" r="1.6" fill="#C9A227"/></svg>
+      <h1 class="brand">Söylem</h1>
+    </div>
+    <p class="sub" id="authSub">Sözünü söyle. Herkes görsün.</p>
+
+    <div id="signupNameField" class="hidden" style="margin-bottom:10px;">
+      <input id="displayNameInput" placeholder="Görünen adın" maxlength="30" />
+    </div>
+    <div style="margin-bottom:10px;">
+      <input id="emailInput" type="email" placeholder="E-posta" autocomplete="email" />
+    </div>
+    <div>
+      <input id="passwordInput" type="password" placeholder="Şifre (en az 6 karakter)" autocomplete="current-password" />
+    </div>
+    <div class="err" id="authError"></div>
+    <button class="btnPrimary" id="authSubmitBtn">Giriş yap</button>
+    <button class="toggleAuth" id="toggleAuthMode">Hesabın yok mu? Kayıt ol</button>
+    <p class="note">Gerçek hesap — e-posta ve şifreyle korunuyor.</p>
+  </div>
+</div>
+
+<div id="appShell" class="hidden">
+  <div id="sidebar">
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:28px; padding-left:4px;">
+      <svg width="30" height="30" viewBox="0 0 48 48" fill="none"><path d="M6 30 C 10 14, 20 8, 24 8 C 30 8, 30 16, 24 18 C 18 20, 14 16, 16 12 C 18 8, 26 6, 34 10 C 40 13, 42 20, 40 26" stroke="#C9A227" stroke-width="2.4" stroke-linecap="round" fill="none"/><circle cx="8" cy="34" r="2.2" fill="#C9A227"/><circle cx="12" cy="38" r="1.6" fill="#C9A227"/></svg>
+      <span class="navLabel" style="font-family:Georgia,serif; font-size:20px; font-weight:700;">Söylem</span>
+    </div>
+    <button class="navBtn active" id="navFeed">🏠<span class="navLabel" style="margin-left:8px;">Ana Akış</span></button>
+    <button class="navBtn" id="navProfile">👤<span class="navLabel" style="margin-left:8px;">Profilim</span></button>
+    <button class="navBtn" id="navLogout">🚪<span class="navLabel" style="margin-left:8px;">Çıkış</span></button>
+  </div>
+  <div id="main">
+    <div id="errorBanner" class="banner hidden"></div>
+    <div id="feedView"></div>
+    <div id="profileView" class="hidden"></div>
+  </div>
+</div>
+
+<!-- Firebase compat SDKs (no build tool needed) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
+<script>
+// ====== FIREBASE CONFIG ======
+const firebaseConfig = {
+  apiKey: "AIzaSyCX7lCeYAalq9iV2VDOEO9p5mnHEItPx0c",
+  authDomain: "soylem-app.firebaseapp.com",
+  projectId: "soylem-app",
+  storageBucket: "soylem-app.firebasestorage.app",
+  messagingSenderId: "363422182384",
+  appId: "1:363422182384:web:ced78eee7d4def255a4b35",
+  measurementId: "G-MFELW2NVZF"
+};
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+// ====== STATE ======
+let currentUser = null; // {uid, displayName, bio, following:[]}
+let usersCache = {};
+let postsCache = [];
+let view = { name: "feed" };
+let isSignup = false;
+
+// ====== HELPERS ======
+function timeAgo(ts){
+  if(!ts) return "";
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60) return `${s}sn`;
+  const m = Math.floor(s/60); if (m<60) return `${m}dk`;
+  const h = Math.floor(m/60); if (h<24) return `${h}sa`;
+  return `${Math.floor(h/24)}g`;
+}
+const HUES = ["#C9A227","#8A6BB1","#4E8098","#B1543F","#5E8C61"];
+function hueFor(name){
+  const s = (name||"").split("").reduce((a,c)=>a+c.charCodeAt(0),0);
+  return HUES[s % HUES.length];
+}
+function avatarHTML(name, size=40, onclick=""){
+  const letter = (name||"?").trim().charAt(0).toUpperCase();
+  return `<button class="avatar" ${onclick} style="width:${size}px;height:${size}px;background:${hueFor(name)};font-size:${size*0.42}px;">${letter}</button>`;
+}
+function esc(s){ const d=document.createElement('div'); d.innerText = s||""; return d.innerHTML; }
+function showError(msg){
+  const el = document.getElementById('errorBanner');
+  el.textContent = msg; el.classList.remove('hidden');
+  setTimeout(()=>el.classList.add('hidden'), 4000);
+}
+
+// ====== AUTH UI ======
+document.getElementById('toggleAuthMode').onclick = () => {
+  isSignup = !isSignup;
+  document.getElementById('signupNameField').classList.toggle('hidden', !isSignup);
+  document.getElementById('authSubmitBtn').textContent = isSignup ? "Kayıt ol" : "Giriş yap";
+  document.getElementById('toggleAuthMode').textContent = isSignup ? "Zaten hesabın var mı? Giriş yap" : "Hesabın yok mu? Kayıt ol";
+  document.getElementById('authError').textContent = "";
+};
+
+document.getElementById('authSubmitBtn').onclick = async () => {
+  const email = document.getElementById('emailInput').value.trim();
+  const password = document.getElementById('passwordInput').value;
+  const displayName = document.getElementById('displayNameInput').value.trim();
+  const errEl = document.getElementById('authError');
+  errEl.textContent = "";
+
+  if (!email || !password) { errEl.textContent = "E-posta ve şifre gerekli."; return; }
+  if (isSignup && !displayName) { errEl.textContent = "Görünen ad gerekli."; return; }
+
+  try {
+    if (isSignup) {
+      const cred = await auth.createUserWithEmailAndPassword(email, password);
+      await db.collection('users').doc(cred.user.uid).set({
+        displayName, bio: "", following: [], createdAt: Date.now()
+      });
+    } else {
+      await auth.signInWithEmailAndPassword(email, password);
+    }
+  } catch (e) {
+    errEl.textContent = friendlyAuthError(e.code);
+  }
+};
+
+function friendlyAuthError(code){
+  const map = {
+    'auth/email-already-in-use': 'Bu e-posta zaten kayıtlı.',
+    'auth/invalid-email': 'Geçersiz e-posta adresi.',
+    'auth/weak-password': 'Şifre en az 6 karakter olmalı.',
+    'auth/user-not-found': 'Kullanıcı bulunamadı.',
+    'auth/wrong-password': 'Şifre yanlış.',
+    'auth/invalid-credential': 'E-posta veya şifre yanlış.',
+  };
+  return map[code] || 'Bir hata oluştu, tekrar dene.';
+}
+
+document.getElementById('navLogout').onclick = () => auth.signOut();
+
+// ====== AUTH STATE ======
+let unsubUsers = null, unsubPosts = null;
+auth.onAuthStateChanged(async (user) => {
+  document.getElementById('loadingScreen').classList.add('hidden');
+  if (user) {
+    const doc = await db.collection('users').doc(user.uid).get();
+    const data = doc.exists ? doc.data() : { displayName: user.email.split('@')[0], bio:"", following:[] };
+    currentUser = { uid: user.uid, ...data };
+    document.getElementById('loginScreen').classList.add('hidden');
+    document.getElementById('appShell').classList.remove('hidden');
+    startListeners();
+    view = { name: "feed" };
+    render();
+  } else {
+    currentUser = null;
+    if (unsubUsers) unsubUsers();
+    if (unsubPosts) unsubPosts();
+    document.getElementById('appShell').classList.add('hidden');
+    document.getElementById('loginScreen').classList.remove('hidden');
+  }
+});
+
+function startListeners(){
+  unsubUsers = db.collection('users').onSnapshot(snap => {
+    usersCache = {};
+    snap.forEach(d => usersCache[d.id] = d.data());
+    if (currentUser && usersCache[currentUser.uid]) {
+      currentUser = { uid: currentUser.uid, ...usersCache[currentUser.uid] };
+    }
+    render();
+  }, err => showError("Kullanıcılar yüklenemedi."));
+
+  unsubPosts = db.collection('posts').orderBy('createdAt','desc').limit(100).onSnapshot(snap => {
+    postsCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    render();
+  }, err => showError("Gönderiler yüklenemedi."));
+}
+
+// ====== NAV ======
+document.getElementById('navFeed').onclick = () => { view = { name: "feed" }; render(); };
+document.getElementById('navProfile').onclick = () => { view = { name: "profile", user: currentUser.uid }; render(); };
+
+// ====== ACTIONS ======
+async function postTweet(){
+  const ta = document.getElementById('composerText');
+  const text = ta.value.trim();
+  if (!text || !currentUser) return;
+  ta.disabled = true;
+  try {
+    await db.collection('posts').add({
+      authorUid: currentUser.uid,
+      text,
+      createdAt: Date.now(),
+      likes: [],
+      retweets: [],
+    });
+    ta.value = "";
+  } catch(e){ showError("Gönderilemedi, tekrar dene."); }
+  ta.disabled = false;
+}
+
+async function toggleLike(postId){
+  const ref = db.collection('posts').doc(postId);
+  const post = postsCache.find(p=>p.id===postId);
+  if (!post) return;
+  const has = (post.likes||[]).includes(currentUser.uid);
+  try {
+    await ref.update({
+      likes: has ? firebase.firestore.FieldValue.arrayRemove(currentUser.uid)
+                 : firebase.firestore.FieldValue.arrayUnion(currentUser.uid)
+    });
+  } catch(e){ showError("İşlem başarısız."); }
+}
+
+async function toggleRetweet(postId){
+  const ref = db.collection('posts').doc(postId);
+  const post = postsCache.find(p=>p.id===postId);
+  if (!post) return;
+  const has = (post.retweets||[]).includes(currentUser.uid);
+  try {
+    await ref.update({
+      retweets: has ? firebase.firestore.FieldValue.arrayRemove(currentUser.uid)
+                    : firebase.firestore.FieldValue.arrayUnion(currentUser.uid)
+    });
+  } catch(e){ showError("İşlem başarısız."); }
+}
+
+async function deletePost(postId){
+  try { await db.collection('posts').doc(postId).delete(); }
+  catch(e){ showError("Silinemedi."); }
+}
+
+async function addComment(postId){
+  const input = document.getElementById('reply-'+postId);
+  const text = input.value.trim();
+  if (!text) return;
+  try {
+    await db.collection('posts').doc(postId).collection('comments').add({
+      authorUid: currentUser.uid, text, createdAt: Date.now()
+    });
+    input.value = "";
+    loadComments(postId, true);
+  } catch(e){ showError("Yorum eklenemedi."); }
+}
+
+let openReplyId = null;
+async function toggleReplyBox(postId){
+  openReplyId = openReplyId === postId ? null : postId;
+  render();
+  if (openReplyId) loadComments(postId);
+}
+
+let commentsCache = {};
+async function loadComments(postId, silent){
+  const snap = await db.collection('posts').doc(postId).collection('comments').orderBy('createdAt','asc').get();
+  commentsCache[postId] = snap.docs.map(d=>({id:d.id, ...d.data()}));
+  if (openReplyId === postId) render();
+}
+
+async function toggleFollow(targetUid){
+  if (targetUid === currentUser.uid) return;
+  const following = currentUser.following || [];
+  const has = following.includes(targetUid);
+  try {
+    await db.collection('users').doc(currentUser.uid).update({
+      following: has ? firebase.firestore.FieldValue.arrayRemove(targetUid)
+                     : firebase.firestore.FieldValue.arrayUnion(targetUid)
+    });
+  } catch(e){ showError("İşlem başarısız."); }
+}
+
+// ====== RENDER ======
+function render(){
+  if (!currentUser) return;
+  document.querySelectorAll('.navBtn').forEach(b=>b.classList.remove('active'));
+  if (view.name === 'feed') document.getElementById('navFeed').classList.add('active');
+  if (view.name === 'profile' && view.user === currentUser.uid) document.getElementById('navProfile').classList.add('active');
+
+  const feedEl = document.getElementById('feedView');
+  const profileEl = document.getElementById('profileView');
+
+  if (view.name === 'feed') {
+    feedEl.classList.remove('hidden'); profileEl.classList.add('hidden');
+    feedEl.innerHTML = renderFeed();
+    document.getElementById('postBtn').onclick = postTweet;
+    document.getElementById('composerText').oninput = (e)=>{
+      document.getElementById('charCount').textContent = 280 - e.target.value.length;
+      document.getElementById('postBtn').disabled = !e.target.value.trim();
+    };
+    bindPostEvents();
+  } else if (view.name === 'profile') {
+    feedEl.classList.add('hidden'); profileEl.classList.remove('hidden');
+    profileEl.innerHTML = renderProfile(view.user);
+    bindPostEvents();
+    const followBtn = document.getElementById('followBtn');
+    if (followBtn) followBtn.onclick = () => toggleFollow(view.user);
+  }
+}
+
+function renderFeed(){
+  const me = currentUser;
+  let html = `
+    <div class="composer">
+      ${avatarHTML(me.displayName)}
+      <div style="flex:1;">
+        <textarea id="composerText" rows="3" maxlength="280" placeholder="Söyleyecek sözün ne?"></textarea>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span class="dim" id="charCount">280</span>
+          <button class="btnPrimary" id="postBtn" style="width:auto; padding:8px 18px; margin:0;" disabled>Paylaş</button>
+        </div>
+      </div>
+    </div>
+    <div class="divider"></div>
+  `;
+  if (postsCache.length === 0) {
+    html += `<div class="emptyState">Henüz hiç söz söylenmemiş. İlk sözü sen söyle.</div>`;
+  } else {
+    html += postsCache.map(renderPost).join("");
+  }
+  return html;
+}
+
+function renderProfile(uid){
+  const u = usersCache[uid] || { displayName: "Bilinmeyen", bio:"", following:[] };
+  const userPosts = postsCache.filter(p=>p.authorUid===uid);
+  const followerCount = Object.entries(usersCache).filter(([id,v])=>(v.following||[]).includes(uid)).length;
+  const isMe = uid === currentUser.uid;
+  const iFollow = (currentUser.following||[]).includes(uid);
+  let html = `
+    <div class="profileHeader">
+      ${avatarHTML(u.displayName, 64)}
+      <div style="flex:1;">
+        <div class="profileName">${esc(u.displayName)}</div>
+        ${u.bio ? `<div style="margin-top:6px;">${esc(u.bio)}</div>` : ""}
+        <div style="display:flex; gap:16px; margin-top:8px;">
+          <span class="dim"><b style="color:#ECE8DD;">${(u.following||[]).length}</b> takip</span>
+          <span class="dim"><b style="color:#ECE8DD;">${followerCount}</b> takipçi</span>
+        </div>
+      </div>
+      ${!isMe ? `<button id="followBtn" class="${iFollow?'followingBtn':'followBtn'}">${iFollow?'Takiptesin':'Takip et'}</button>` : ""}
+    </div>
+    <div class="divider"></div>
+  `;
+  html += userPosts.length ? userPosts.map(renderPost).join("") : `<div class="emptyState">Henüz söz yok.</div>`;
+  return html;
+}
+
+function renderPost(p){
+  const author = usersCache[p.authorUid] || { displayName: "Bilinmeyen" };
+  const liked = (p.likes||[]).includes(currentUser.uid);
+  const retweeted = (p.retweets||[]).includes(currentUser.uid);
+  const comments = commentsCache[p.id] || [];
+  let replyHTML = "";
+  if (openReplyId === p.id) {
+    replyHTML = `<div class="replyBox">
+      ${comments.map(c=>{
+        const cu = usersCache[c.authorUid] || {displayName:"Bilinmeyen"};
+        return `<div class="commentRow">
+          ${avatarHTML(cu.displayName, 26)}
+          <div>
+            <span style="font-weight:600; font-size:13px;">${esc(cu.displayName)}</span>
+            <span class="dim">· ${timeAgo(c.createdAt)}</span>
+            <div style="font-size:13.5px; margin-top:2px;">${esc(c.text)}</div>
+          </div>
+        </div>`;
+      }).join("")}
+      <div class="replyInputRow">
+        <input id="reply-${p.id}" placeholder="Yanıt yaz…" />
+        <button class="smallBtn" data-comment="${p.id}">Gönder</button>
+      </div>
+    </div>`;
+  }
+  return `
+    <div class="postCard">
+      <div class="postRow">
+        ${avatarHTML(author.displayName, 40, `data-profile="${p.authorUid}"`)}
+        <div style="flex:1; min-width:0;">
+          <div style="display:flex; align-items:baseline; gap:6px; flex-wrap:wrap;">
+            <button class="linkName" data-profile="${p.authorUid}">${esc(author.displayName)}</button>
+            <span class="dim">· ${timeAgo(p.createdAt)}</span>
+            ${p.authorUid===currentUser.uid ? `<button class="iconGhost" data-delete="${p.id}" title="Sil">🗑</button>` : ""}
+          </div>
+          <div class="postText">${esc(p.text)}</div>
+          <div class="actions">
+            <button class="actionBtn" data-reply="${p.id}">💬 ${comments.length || ''}</button>
+            <button class="actionBtn ${retweeted?'retweeted':''}" data-retweet="${p.id}">🔁 ${(p.retweets||[]).length}</button>
+            <button class="actionBtn ${liked?'liked':''}" data-like="${p.id}">❤ ${(p.likes||[]).length}</button>
+          </div>
+          ${replyHTML}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function bindPostEvents(){
+  document.querySelectorAll('[data-profile]').forEach(el=>{
+    el.onclick = () => { view = { name:'profile', user: el.getAttribute('data-profile') }; render(); };
+  });
+  document.querySelectorAll('[data-like]').forEach(el=>{
+    el.onclick = () => toggleLike(el.getAttribute('data-like'));
+  });
+  document.querySelectorAll('[data-retweet]').forEach(el=>{
+    el.onclick = () => toggleRetweet(el.getAttribute('data-retweet'));
+  });
+  document.querySelectorAll('[data-delete]').forEach(el=>{
+    el.onclick = () => deletePost(el.getAttribute('data-delete'));
+  });
+  document.querySelectorAll('[data-reply]').forEach(el=>{
+    el.onclick = () => toggleReplyBox(el.getAttribute('data-reply'));
+  });
+  document.querySelectorAll('[data-comment]').forEach(el=>{
+    el.onclick = () => addComment(el.getAttribute('data-comment'));
+  });
+}
+</script>
+</body>
+</html>

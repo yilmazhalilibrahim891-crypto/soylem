@@ -38,6 +38,15 @@
   .avatar { border-radius:50%; display:flex; align-items:center; justify-content:center; font-family:Georgia,serif; font-weight:700; color:#0E1116; flex-shrink:0; cursor:pointer; border:none; }
   .divider { height:1px; background:#1D2128; margin:16px 0; }
   .postCard { padding:14px 0; border-bottom:1px solid #1D2128; }
+  .avatarImg { width:100%; height:100%; object-fit:cover; display:block; }
+  .postImage { width:100%; max-height:420px; object-fit:cover; border-radius:12px; margin-top:10px; border:1px solid #262B33; }
+  .composerImgWrap { position:relative; margin-top:10px; display:inline-block; }
+  .composerImgWrap img { max-width:100%; max-height:220px; border-radius:12px; display:block; }
+  .removeImgBtn { position:absolute; top:6px; right:6px; background:rgba(14,17,22,0.8); color:#ECE8DD; border:none; border-radius:50%; width:26px; height:26px; cursor:pointer; font-size:14px; }
+  .composerToolbar { display:flex; align-items:center; gap:10px; }
+  .imgPickBtn { background:none; border:none; color:#8B8F98; cursor:pointer; padding:6px; }
+  .profilePhotoBtn { position:absolute; bottom:0; right:0; background:#C9A227; color:#0E1116; border:none; border-radius:50%; width:26px; height:26px; font-size:13px; cursor:pointer; }
+  .avatarWrap { position:relative; display:inline-block; }
   .postRow { display:flex; gap:12px; }
   .linkName { background:none; border:none; color:#ECE8DD; font-weight:700; font-size:14px; cursor:pointer; padding:0; }
   .postText { color:#ECE8DD; font-size:15px; margin-top:4px; line-height:1.45; white-space:pre-wrap; word-break:break-word; }
@@ -134,6 +143,8 @@ let usersCache = {};
 let postsCache = [];
 let view = { name: "feed" };
 let isSignup = false;
+let composerImageData = null;
+let uploadingPhoto = false;
 
 // ====== HELPERS ======
 function timeAgo(ts){
@@ -149,11 +160,37 @@ function hueFor(name){
   const s = (name||"").split("").reduce((a,c)=>a+c.charCodeAt(0),0);
   return HUES[s % HUES.length];
 }
-function avatarHTML(name, size=40, onclick=""){
+function avatarHTML(name, size=40, onclick="", photoURL=null){
+  if (photoURL) {
+    return `<button class="avatar" ${onclick} style="width:${size}px;height:${size}px;padding:0;overflow:hidden;"><img class="avatarImg" src="${photoURL}" /></button>`;
+  }
   const letter = (name||"?").trim().charAt(0).toUpperCase();
   return `<button class="avatar" ${onclick} style="width:${size}px;height:${size}px;background:${hueFor(name)};font-size:${size*0.42}px;">${letter}</button>`;
 }
 function esc(s){ const d=document.createElement('div'); d.innerText = s||""; return d.innerHTML; }
+
+// Resmi küçültüp base64'e çevirir (Firestore belge boyutu sınırlı olduğu için)
+function resizeImageFile(file, maxDim, quality){
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > height && width > maxDim) { height = Math.round(height * maxDim / width); width = maxDim; }
+        else if (height > maxDim) { width = Math.round(width * maxDim / height); height = maxDim; }
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
 function showError(msg){
   const el = document.getElementById('errorBanner');
   el.textContent = msg; el.classList.remove('hidden');
@@ -253,19 +290,64 @@ document.getElementById('navProfile').onclick = () => { view = { name: "profile"
 async function postTweet(){
   const ta = document.getElementById('composerText');
   const text = ta.value.trim();
-  if (!text || !currentUser) return;
+  if ((!text && !composerImageData) || !currentUser) return;
   ta.disabled = true;
   try {
-    await db.collection('posts').add({
+    const data = {
       authorUid: currentUser.uid,
       text,
       createdAt: Date.now(),
       likes: [],
       retweets: [],
-    });
+    };
+    if (composerImageData) data.imageData = composerImageData;
+    await db.collection('posts').add(data);
     ta.value = "";
-  } catch(e){ showError("Gönderilemedi, tekrar dene."); }
+    composerImageData = null;
+    render();
+  } catch(e){ showError("Gönderilemedi, tekrar dene. (Resim çok büyük olabilir)"); }
   ta.disabled = false;
+}
+
+function preserveComposerTextAcrossRender(fn){
+  const ta = document.getElementById('composerText');
+  const savedText = ta ? ta.value : "";
+  fn();
+  render();
+  const newTa = document.getElementById('composerText');
+  if (newTa) {
+    newTa.value = savedText;
+    document.getElementById('charCount').textContent = 280 - savedText.length;
+    document.getElementById('postBtn').disabled = !savedText.trim() && !composerImageData;
+  }
+}
+
+async function handleComposerImagePick(input){
+  const file = input.files[0];
+  if (!file) return;
+  try {
+    const dataUrl = await resizeImageFile(file, 900, 0.7);
+    preserveComposerTextAcrossRender(() => { composerImageData = dataUrl; });
+  } catch(e){ showError("Resim yüklenemedi."); }
+  input.value = "";
+}
+
+function removeComposerImage(){
+  preserveComposerTextAcrossRender(() => { composerImageData = null; });
+}
+
+async function handleProfilePhotoPick(input){
+  const file = input.files[0];
+  if (!file || !currentUser) return;
+  uploadingPhoto = true;
+  render();
+  try {
+    const dataUrl = await resizeImageFile(file, 300, 0.7);
+    await db.collection('users').doc(currentUser.uid).update({ photoURL: dataUrl });
+  } catch(e){ showError("Fotoğraf yüklenemedi. (Dosya çok büyük olabilir)"); }
+  uploadingPhoto = false;
+  input.value = "";
+  render();
 }
 
 async function toggleLike(postId){
@@ -354,8 +436,12 @@ function render(){
     document.getElementById('postBtn').onclick = postTweet;
     document.getElementById('composerText').oninput = (e)=>{
       document.getElementById('charCount').textContent = 280 - e.target.value.length;
-      document.getElementById('postBtn').disabled = !e.target.value.trim();
+      document.getElementById('postBtn').disabled = !e.target.value.trim() && !composerImageData;
     };
+    document.getElementById('imgPickBtn').onclick = () => document.getElementById('composerImgInput').click();
+    document.getElementById('composerImgInput').onchange = (e) => handleComposerImagePick(e.target);
+    const removeBtn = document.getElementById('removeImgBtn');
+    if (removeBtn) removeBtn.onclick = removeComposerImage;
     bindPostEvents();
   } else if (view.name === 'profile') {
     feedEl.classList.add('hidden'); profileEl.classList.remove('hidden');
@@ -363,6 +449,12 @@ function render(){
     bindPostEvents();
     const followBtn = document.getElementById('followBtn');
     if (followBtn) followBtn.onclick = () => toggleFollow(view.user);
+    const photoBtn = document.getElementById('profilePhotoBtn');
+    const photoInput = document.getElementById('profilePhotoInput');
+    if (photoBtn && photoInput) {
+      photoBtn.onclick = () => photoInput.click();
+      photoInput.onchange = (e) => handleProfilePhotoPick(e.target);
+    }
   }
 }
 
@@ -370,12 +462,21 @@ function renderFeed(){
   const me = currentUser;
   let html = `
     <div class="composer">
-      ${avatarHTML(me.displayName)}
+      ${avatarHTML(me.displayName, 40, "", me.photoURL)}
       <div style="flex:1;">
         <textarea id="composerText" rows="3" maxlength="280" placeholder="Söyleyecek sözün ne?"></textarea>
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-          <span class="dim" id="charCount">280</span>
-          <button class="btnPrimary" id="postBtn" style="width:auto; padding:8px 18px; margin:0;" disabled>Paylaş</button>
+        ${composerImageData ? `
+          <div class="composerImgWrap">
+            <img src="${composerImageData}" />
+            <button class="removeImgBtn" id="removeImgBtn">✕</button>
+          </div>` : ""}
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
+          <div class="composerToolbar">
+            <button class="imgPickBtn" id="imgPickBtn" title="Resim ekle">🖼</button>
+            <input type="file" accept="image/*" id="composerImgInput" class="hidden" />
+            <span class="dim" id="charCount">280</span>
+          </div>
+          <button class="btnPrimary" id="postBtn" style="width:auto; padding:8px 18px; margin:0;" ${(!composerImageData) ? "disabled" : ""}>Paylaş</button>
         </div>
       </div>
     </div>
@@ -397,7 +498,13 @@ function renderProfile(uid){
   const iFollow = (currentUser.following||[]).includes(uid);
   let html = `
     <div class="profileHeader">
-      ${avatarHTML(u.displayName, 64)}
+      <div class="avatarWrap">
+        ${avatarHTML(u.displayName, 64, "", u.photoURL)}
+        ${isMe ? `
+          <button class="profilePhotoBtn" id="profilePhotoBtn" title="Fotoğrafı değiştir">${uploadingPhoto ? "…" : "✎"}</button>
+          <input type="file" accept="image/*" id="profilePhotoInput" class="hidden" />
+        ` : ""}
+      </div>
       <div style="flex:1;">
         <div class="profileName">${esc(u.displayName)}</div>
         ${u.bio ? `<div style="margin-top:6px;">${esc(u.bio)}</div>` : ""}
@@ -425,7 +532,7 @@ function renderPost(p){
       ${comments.map(c=>{
         const cu = usersCache[c.authorUid] || {displayName:"Bilinmeyen"};
         return `<div class="commentRow">
-          ${avatarHTML(cu.displayName, 26)}
+          ${avatarHTML(cu.displayName, 26, "", cu.photoURL)}
           <div>
             <span style="font-weight:600; font-size:13px;">${esc(cu.displayName)}</span>
             <span class="dim">· ${timeAgo(c.createdAt)}</span>
@@ -442,14 +549,15 @@ function renderPost(p){
   return `
     <div class="postCard">
       <div class="postRow">
-        ${avatarHTML(author.displayName, 40, `data-profile="${p.authorUid}"`)}
+        ${avatarHTML(author.displayName, 40, `data-profile="${p.authorUid}"`, author.photoURL)}
         <div style="flex:1; min-width:0;">
           <div style="display:flex; align-items:baseline; gap:6px; flex-wrap:wrap;">
             <button class="linkName" data-profile="${p.authorUid}">${esc(author.displayName)}</button>
             <span class="dim">· ${timeAgo(p.createdAt)}</span>
             ${p.authorUid===currentUser.uid ? `<button class="iconGhost" data-delete="${p.id}" title="Sil">🗑</button>` : ""}
           </div>
-          <div class="postText">${esc(p.text)}</div>
+          ${p.text ? `<div class="postText">${esc(p.text)}</div>` : ""}
+          ${p.imageData ? `<img class="postImage" src="${p.imageData}" />` : ""}
           <div class="actions">
             <button class="actionBtn" data-reply="${p.id}">💬 ${comments.length || ''}</button>
             <button class="actionBtn ${retweeted?'retweeted':''}" data-retweet="${p.id}">🔁 ${(p.retweets||[]).length}</button>

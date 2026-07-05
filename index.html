@@ -108,6 +108,10 @@
   .coverWrap { position:relative; height:130px; border-radius:12px; overflow:hidden; background:#171B21; margin-bottom:12px; border:1px solid #262B33; }
   .coverImg { width:100%; height:100%; object-fit:cover; display:block; }
   .coverBtn { position:absolute; top:8px; right:8px; background:rgba(14,17,22,0.75); color:#ECE8DD; border:none; border-radius:8px; padding:6px 10px; cursor:pointer; font-size:13px; }
+  .videoEmbed { width:100%; aspect-ratio:16/9; border:none; border-radius:12px; margin-top:10px; background:#000; }
+  .videoFile { width:100%; max-height:420px; border-radius:12px; margin-top:10px; background:#000; }
+  .dangerBtn { background:transparent; color:#D64550; border:1px solid #D64550; border-radius:20px; padding:8px 18px; font-weight:700; font-size:13px; cursor:pointer; }
+  .suggestRow { display:flex; align-items:center; gap:10px; padding:8px 0; }
 
   /* Açık tema */
   body.light { background:#F3F1EA; color:#1B1B1B; }
@@ -479,6 +483,7 @@ function updateDMBadge(){
 }
 
 async function sendDM(toUid){
+  if (isBlockedBetween(toUid)) { showError("Engel nedeniyle mesaj gönderilemez."); return; }
   const input = document.getElementById('chatInput');
   const text = input ? input.value.trim() : "";
   if (!text) return;
@@ -785,6 +790,52 @@ function fullTime(ts){
   return new Date(ts).toLocaleString('tr-TR', { day:'numeric', month:'long', year:'numeric', hour:'2-digit', minute:'2-digit' });
 }
 
+// İki kullanıcı arasında engel var mı? (ben onu ya da o beni)
+function isBlockedBetween(uid){
+  if (!currentUser || !uid || uid === currentUser.uid) return false;
+  if ((currentUser.blocked||[]).includes(uid)) return true;
+  if (((usersCache[uid]||{}).blocked||[]).includes(currentUser.uid)) return true;
+  return false;
+}
+
+// Engelle / engeli kaldır (engellerken takip de bırakılır)
+async function toggleBlock(targetUid){
+  if (targetUid === currentUser.uid) return;
+  const has = (currentUser.blocked||[]).includes(targetUid);
+  try {
+    const upd = {
+      blocked: has ? firebase.firestore.FieldValue.arrayRemove(targetUid)
+                   : firebase.firestore.FieldValue.arrayUnion(targetUid)
+    };
+    if (!has) upd.following = firebase.firestore.FieldValue.arrayRemove(targetUid);
+    await db.collection('users').doc(currentUser.uid).update(upd);
+    showInfo(has ? "Engel kaldırıldı." : "Kullanıcı engellendi.");
+  } catch(e){ showError("İşlem başarısız."); }
+}
+
+// Şikâyet gönder (reports koleksiyonuna)
+async function reportContent(targetUid, postId){
+  try {
+    await db.collection('reports').add({
+      reporterUid: currentUser.uid,
+      targetUid: targetUid || null,
+      postId: postId || null,
+      createdAt: Date.now()
+    });
+    showInfo("🚩 Şikâyetin alındı, teşekkürler.");
+  } catch(e){ showError("Şikâyet gönderilemedi."); }
+}
+
+// Metindeki YouTube ya da mp4/webm linkini oynatıcıya çevirir
+function videoEmbedHTML(text){
+  const t = text || "";
+  const yt = t.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([\w-]{6,20})/);
+  if (yt) return `<iframe class="videoEmbed" src="https://www.youtube.com/embed/${yt[1]}" allowfullscreen loading="lazy"></iframe>`;
+  const mp4 = t.match(/https?:\/\/[^\s<]+\.(?:mp4|webm)/i);
+  if (mp4) return `<video class="videoFile" src="${mp4[0]}" controls preload="metadata"></video>`;
+  return "";
+}
+
 // Kullanıcı adı seçme
 async function saveUsername(){
   const input = document.getElementById('usernameEditInput');
@@ -875,6 +926,10 @@ function render(){
     bindPostEvents();
     const followBtn = document.getElementById('followBtn');
     if (followBtn) followBtn.onclick = () => toggleFollow(view.user);
+    const blockBtn = document.getElementById('blockBtn');
+    if (blockBtn) blockBtn.onclick = () => toggleBlock(view.user);
+    const reportBtn = document.getElementById('reportBtn');
+    if (reportBtn) reportBtn.onclick = () => reportContent(view.user, null);
     const msgBtn = document.getElementById('msgBtn');
     if (msgBtn) msgBtn.onclick = () => { chatDraft = ""; view = { name:'chat', user: view.user }; render(); };
     const coverBtn = document.getElementById('coverBtn');
@@ -963,16 +1018,19 @@ function render(){
     dmsEl.classList.remove('hidden');
     dmsEl.innerHTML = renderChat(view.user);
     document.getElementById('chatBack').onclick = () => { view = { name:'dms' }; render(); };
-    document.getElementById('chatSendBtn').onclick = () => sendDM(view.user);
+    const csb = document.getElementById('chatSendBtn');
+    if (csb) csb.onclick = () => sendDM(view.user);
     const ci = document.getElementById('chatInput');
-    ci.value = chatDraft;
-    ci.oninput = (e) => { chatDraft = e.target.value; };
-    ci.onkeydown = (e) => { if (e.key === 'Enter') sendDM(view.user); };
+    if (ci) {
+      ci.value = chatDraft;
+      ci.oninput = (e) => { chatDraft = e.target.value; };
+      ci.onkeydown = (e) => { if (e.key === 'Enter') sendDM(view.user); };
+    }
     markChatRead(view.user);
     window.scrollTo(0, document.body.scrollHeight);
   } else if (view.name === 'saved') {
     savedEl.classList.remove('hidden');
-    const saved = postsCache.filter(p => (p.bookmarks||[]).includes(currentUser.uid));
+    const saved = postsCache.filter(p => (p.bookmarks||[]).includes(currentUser.uid) && !isBlockedBetween(p.authorUid));
     savedEl.innerHTML = `<h2 style="font-family:Georgia,serif; font-size:20px; margin-bottom:8px;">🔖 Kaydedilenler</h2>` +
       (saved.length ? saved.map(renderPost).join("") : `<div class="emptyState">Henüz kaydedilen söz yok.<br>Sözlerdeki 🔖 ikonuna basarak kaydet.</div>`);
     bindPostEvents();
@@ -1022,6 +1080,7 @@ function renderFeed(){
   `;
 
   html += renderTrends();
+  if ((me.following||[]).length < 3) html += renderSuggestions();
 
   html += `
     <div class="feedTabs">
@@ -1030,20 +1089,52 @@ function renderFeed(){
     </div>
   `;
 
-  let posts = postsCache;
+  let posts = postsCache.filter(p => !isBlockedBetween(p.authorUid));
   if (feedFilter === 'following') {
     const fset = new Set([...(me.following||[]), me.uid]);
-    posts = postsCache.filter(p => fset.has(p.authorUid));
+    posts = posts.filter(p => fset.has(p.authorUid));
   }
 
   if (posts.length === 0) {
     html += feedFilter === 'following'
-      ? `<div class="emptyState">Takip ettiklerinden henüz söz yok.<br>Ara'dan yeni insanlar bul.</div>`
+      ? `<div class="emptyState">Takip ettiklerinden henüz söz yok.</div>` + renderSuggestions()
       : `<div class="emptyState">Henüz hiç söz söylenmemiş. İlk sözü sen söyle.</div>`;
   } else {
     html += posts.map(renderPost).join("");
   }
   return html;
+}
+
+// ====== TAKİP ÖNERİLERİ ======
+function renderSuggestions(){
+  const counts = {};
+  Object.values(usersCache).forEach(u => {
+    (u.following||[]).forEach(f => counts[f] = (counts[f]||0) + 1);
+  });
+  const skip = new Set([...(currentUser.following||[]), currentUser.uid]);
+  const cands = Object.keys(usersCache)
+    .filter(id => !skip.has(id) && !isBlockedBetween(id))
+    .sort((a,b) => (counts[b]||0) - (counts[a]||0))
+    .slice(0, 5);
+  if (!cands.length) return "";
+  return `
+    <div class="trendBox">
+      <div class="trendTitle">✨ Tanıyor olabileceklerin</div>
+      ${cands.map(id => {
+        const u = usersCache[id] || { displayName: "?" };
+        return `<div class="suggestRow">
+          <span data-profile="${id}" style="display:flex; align-items:center; gap:10px; flex:1; min-width:0; cursor:pointer;">
+            ${avatarHTML(u.displayName, 36, "", u.photoURL)}
+            <span style="min-width:0;">
+              <span style="font-weight:700; font-size:14px; display:block;">${esc(u.displayName)}${verifiedBadge(u)}</span>
+              ${u.username ? `<span class="dim" style="display:block;">@${esc(u.username)}</span>` : ""}
+            </span>
+          </span>
+          <button class="followBtn" data-followuser="${id}" style="flex-shrink:0;">Takip et</button>
+        </div>`;
+      }).join("")}
+    </div>
+  `;
 }
 
 // ====== GÜNDEM (TREND HASHTAGLER) ======
@@ -1125,14 +1216,35 @@ function renderProfile(uid){
           <span class="dim" style="cursor:pointer;" data-follows="${uid}|followers"><b class="strongText">${followerCount}</b> takipçi</span>
         </div>
       </div>
-      ${!isMe ? `
-        <div style="display:flex; flex-direction:column; gap:8px; align-items:flex-end;">
+      ${!isMe ? (() => {
+        const iBlocked = (currentUser.blocked||[]).includes(uid);
+        const theyBlockedMe = ((usersCache[uid]||{}).blocked||[]).includes(currentUser.uid);
+        if (theyBlockedMe) {
+          return `<div style="display:flex; flex-direction:column; gap:8px; align-items:flex-end;">
+            <button id="reportBtn" class="dangerBtn">🚩 Şikâyet et</button>
+          </div>`;
+        }
+        if (iBlocked) {
+          return `<div style="display:flex; flex-direction:column; gap:8px; align-items:flex-end;">
+            <button id="blockBtn" class="dangerBtn">Engeli kaldır</button>
+            <button id="reportBtn" class="dangerBtn" style="border-color:#8B8F98; color:#8B8F98;">🚩 Şikâyet et</button>
+          </div>`;
+        }
+        return `<div style="display:flex; flex-direction:column; gap:8px; align-items:flex-end;">
           <button id="followBtn" class="${iFollow?'followingBtn':'followBtn'}">${iFollow?'Takiptesin':'Takip et'}</button>
           <button id="msgBtn" class="followingBtn">✉️ Mesaj</button>
-        </div>` : ""}
+          <button id="blockBtn" class="dangerBtn" style="font-size:12px; padding:6px 14px;">⛔ Engelle</button>
+          <button id="reportBtn" class="dangerBtn" style="font-size:12px; padding:6px 14px; border-color:#8B8F98; color:#8B8F98;">🚩 Şikâyet</button>
+        </div>`;
+      })() : ""}
     </div>
     <div class="divider"></div>
   `;
+  if (!isMe && isBlockedBetween(uid)) {
+    const iBlocked = (currentUser.blocked||[]).includes(uid);
+    html += `<div class="emptyState">${iBlocked ? "Bu kullanıcıyı engelledin.<br>Sözlerini görmek için engeli kaldır." : "Bu kullanıcı seni engellemiş."}</div>`;
+    return html;
+  }
   let list = userPosts;
   let pinnedHTML = "";
   if (u.pinnedPost) {
@@ -1223,6 +1335,7 @@ function renderPost(p){
             </div>`
           : (p.text ? `<div class="postText">${linkify(p.text)}${p.edited ? ` <span class="dim" style="font-size:11px;">(düzenlendi)</span>` : ""}</div>` : "")}
           ${p.imageData ? `<img class="postImage" src="${p.imageData}" />` : ""}
+          ${videoEmbedHTML(p.text)}
           ${p.quoteOf ? renderQuoteEmbed(p.quoteOf) : ""}
           ${p.poll ? renderPoll(p) : ""}
           <div class="actions">
@@ -1285,7 +1398,7 @@ function renderPostDetail(postId){
   const liked = (p.likes||[]).includes(currentUser.uid);
   const retweeted = (p.retweets||[]).includes(currentUser.uid);
   const bookmarked = (p.bookmarks||[]).includes(currentUser.uid);
-  const comments = commentsCache[p.id] || [];
+  const comments = (commentsCache[p.id] || []).filter(c => !isBlockedBetween(c.authorUid));
   return `
     <button class="chatBack" id="detailBack">← Geri</button>
     <div style="padding:6px 0;">
@@ -1299,6 +1412,7 @@ function renderPostDetail(postId){
       </div>
       ${p.text ? `<div class="postText" style="font-size:18px; margin-top:12px; line-height:1.5;">${linkify(p.text)}${p.edited ? ` <span class="dim" style="font-size:11px;">(düzenlendi)</span>` : ""}</div>` : ""}
       ${p.imageData ? `<img class="postImage" src="${p.imageData}" style="max-height:none;" />` : ""}
+      ${videoEmbedHTML(p.text)}
       ${p.quoteOf ? renderQuoteEmbed(p.quoteOf) : ""}
       ${p.poll ? renderPoll(p) : ""}
       <div class="dim" style="margin-top:12px; font-size:13px;">${fullTime(p.createdAt)}</div>
@@ -1310,6 +1424,7 @@ function renderPostDetail(postId){
         <button class="actionBtn ${liked?'liked':''}" data-like="${p.id}">❤ ${(p.likes||[]).length}</button>
         <button class="actionBtn ${bookmarked?'bookmarked':''}" data-bookmark="${p.id}">🔖</button>
         <button class="actionBtn" data-share="${p.id}" title="Bağlantıyı kopyala">🔗</button>
+        ${p.authorUid !== currentUser.uid ? `<button class="actionBtn" data-report="${p.authorUid}|${p.id}" title="Şikâyet et">🚩</button>` : ""}
       </div>
       <div class="divider" style="margin:12px 0;"></div>
       <div style="font-weight:700; font-size:15px; margin-bottom:10px;">Yanıtlar ${comments.length ? `(${comments.length})` : ""}</div>
@@ -1404,6 +1519,15 @@ function bindPostEvents(){
   document.querySelectorAll('[data-pin]').forEach(el=>{
     el.onclick = () => togglePin(el.getAttribute('data-pin'));
   });
+  document.querySelectorAll('[data-report]').forEach(el=>{
+    el.onclick = () => {
+      const [uid, pid] = el.getAttribute('data-report').split('|');
+      reportContent(uid, pid);
+    };
+  });
+  document.querySelectorAll('[data-followuser]').forEach(el=>{
+    el.onclick = () => toggleFollow(el.getAttribute('data-followuser'));
+  });
   document.querySelectorAll('[data-mention]').forEach(el=>{
     el.onclick = (e) => {
       e.stopPropagation();
@@ -1450,7 +1574,7 @@ function renderSearchResultsOnly(){
 
   if (q.startsWith('#')) {
     const tag = q.slice(1);
-    const matches = postsCache.filter(p => (p.text||"").toLowerCase().includes('#'+tag));
+    const matches = postsCache.filter(p => (p.text||"").toLowerCase().includes('#'+tag) && !isBlockedBetween(p.authorUid));
     el.innerHTML = matches.length
       ? matches.map(renderPost).join("")
       : `<div class="emptyState">"#${esc(tag)}" ile ilgili söz bulunamadı.</div>`;
@@ -1484,6 +1608,7 @@ function renderDMList(){
   const convos = {};
   dmsCache.forEach(m => {
     const other = m.fromUid === currentUser.uid ? m.toUid : m.fromUid;
+    if (isBlockedBetween(other)) return;
     if (!convos[other]) convos[other] = { last: null, unread: 0 };
     convos[other].last = m; // artan sıralı, son mesaj kalır
     if (m.toUid === currentUser.uid && !m.read) convos[other].unread++;
@@ -1527,8 +1652,10 @@ function renderChat(otherUid){
         </div>`).join("") : `<div class="emptyState">İlk mesajı sen gönder.</div>`}
     </div>
     <div class="chatInputBar">
-      <input id="chatInput" placeholder="Mesaj yaz…" maxlength="500" />
-      <button class="smallBtn" id="chatSendBtn" style="background:#C9A227; color:#0E1116; font-weight:700;">Gönder</button>
+      ${isBlockedBetween(otherUid)
+        ? `<div class="emptyState" style="padding:10px 0; flex:1;">Engel nedeniyle mesajlaşma kapalı.</div>`
+        : `<input id="chatInput" placeholder="Mesaj yaz…" maxlength="500" />
+      <button class="smallBtn" id="chatSendBtn" style="background:#C9A227; color:#0E1116; font-weight:700;">Gönder</button>`}
     </div>
   `;
 }
@@ -1553,10 +1680,11 @@ function notifIcon(type){
   return '🔔';
 }
 function renderNotifications(){
-  if (notificationsCache.length === 0) {
+  const items = notificationsCache.filter(n => !isBlockedBetween(n.fromUid));
+  if (items.length === 0) {
     return `<div class="emptyState">Henüz bildirim yok.</div>`;
   }
-  return notificationsCache.map(n => `
+  return items.map(n => `
     <div class="notifItem ${n.read ? '' : 'unread'}" data-notif-goto="${n.fromUid}" data-notif-post="${n.postId || ''}">
       <div class="notifIcon">${notifIcon(n.type)}</div>
       <div style="flex:1;">

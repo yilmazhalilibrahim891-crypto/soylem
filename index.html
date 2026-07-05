@@ -224,6 +224,7 @@ let editingPostId = null;
 let chatDraft = "";
 let composerQuote = null; // alıntılanan söz id'si
 let composerPoll = null;  // ["seçenek1","seçenek2",...] veya null
+let detailReturn = null;  // söz detayından geri dönülecek görünüm
 
 // Tema
 if (localStorage.getItem('soylemTheme') === 'light') document.body.classList.add('light');
@@ -256,7 +257,32 @@ function linkify(text){
   let safe = esc(text||"");
   safe = safe.replace(/(https?:\/\/[^\s<]+)/g, (m) => `<a class="postLink" href="${m}" target="_blank" rel="noopener">${m}</a>`);
   safe = safe.replace(/(^|[\s])#([\wğüşıöçĞÜŞİÖÇ]+)/g, (m, pre, tag) => `${pre}<span class="hashtag" data-hashtag="${esc(tag)}">#${esc(tag)}</span>`);
+  safe = safe.replace(/(^|[\s])@([\wğüşıöçĞÜŞİÖÇ]+)/g, (m, pre, name) => `${pre}<span class="hashtag" data-mention="${esc(name)}">@${esc(name)}</span>`);
   return safe;
+}
+
+// @etiket -> kullanıcı eşleştirme (ad boşluksuz ya da ilk isim)
+function findUserByMention(tag){
+  const t = (tag||"").toLowerCase();
+  if (!t) return null;
+  for (const [id, u] of Object.entries(usersCache)) {
+    const dn = (u.displayName||"").toLowerCase().trim();
+    if (dn.replace(/\s+/g,'') === t || dn.split(/\s+/)[0] === t) return id;
+  }
+  return null;
+}
+
+// Metindeki @etiketlere bildirim gönderir
+function notifyMentions(text, postId){
+  const tags = (text||"").match(/(^|[\s])@([\wğüşıöçĞÜŞİÖÇ]+)/g) || [];
+  const done = new Set();
+  tags.forEach(t => {
+    const uid = findUserByMention(t.trim().slice(1));
+    if (uid && !done.has(uid)) {
+      done.add(uid);
+      createNotification(uid, 'mention', postId ? { postId } : {});
+    }
+  });
 }
 
 // Resmi küçültüp base64'e çevirir (Firestore belge boyutu sınırlı olduğu için)
@@ -494,7 +520,8 @@ async function postTweet(){
       data.poll = composerPoll.map(s=>s.trim()).filter(Boolean);
       data.pollVotes = {};
     }
-    await db.collection('posts').add(data);
+    const docRef = await db.collection('posts').add(data);
+    notifyMentions(text, docRef.id);
     if (composerQuote) {
       const q = postsCache.find(p=>p.id===composerQuote);
       if (q) createNotification(q.authorUid, 'quote', { postId: composerQuote });
@@ -617,6 +644,7 @@ async function addComment(postId){
     loadComments(postId, true);
     const post = postsCache.find(p=>p.id===postId);
     if (post) createNotification(post.authorUid, 'comment', { postId });
+    notifyMentions(text, postId);
   } catch(e){ showError("Yorum eklenemedi."); }
 }
 
@@ -638,7 +666,7 @@ let commentsCache = {};
 async function loadComments(postId, silent){
   const snap = await db.collection('posts').doc(postId).collection('comments').orderBy('createdAt','asc').get();
   commentsCache[postId] = snap.docs.map(d=>({id:d.id, ...d.data()}));
-  if (openReplyId === postId) render();
+  if (openReplyId === postId || (view.name === 'postDetail' && view.post === postId)) render();
 }
 
 async function handleCoverPick(input){
@@ -682,6 +710,21 @@ async function toggleFollow(targetUid){
   } catch(e){ showError("İşlem başarısız."); }
 }
 
+// Sözü profilde sabitle / kaldır
+async function togglePin(postId){
+  const isPinned = currentUser.pinnedPost === postId;
+  try {
+    await db.collection('users').doc(currentUser.uid).update({
+      pinnedPost: isPinned ? firebase.firestore.FieldValue.delete() : postId
+    });
+  } catch(e){ showError("İşlem başarısız."); }
+}
+
+function fullTime(ts){
+  if (!ts) return "";
+  return new Date(ts).toLocaleString('tr-TR', { day:'numeric', month:'long', year:'numeric', hour:'2-digit', minute:'2-digit' });
+}
+
 // Profil bio düzenleme
 async function saveBio(){
   const ta = document.getElementById('bioEditInput');
@@ -698,7 +741,7 @@ async function saveBio(){
 function render(){
   if (!currentUser) return;
   document.querySelectorAll('.navBtn').forEach(b=>b.classList.remove('active'));
-  if (view.name === 'feed') document.getElementById('navFeed').classList.add('active');
+  if (view.name === 'feed' || view.name === 'postDetail') document.getElementById('navFeed').classList.add('active');
   if (view.name === 'profile' && view.user === currentUser.uid) document.getElementById('navProfile').classList.add('active');
   if (view.name === 'search') document.getElementById('navSearch').classList.add('active');
   if (view.name === 'notifications') document.getElementById('navNotifs').classList.add('active');
@@ -774,6 +817,32 @@ function render(){
     if (saveBioBtn) saveBioBtn.onclick = saveBio;
     const cancelBioBtn = document.getElementById('cancelBioBtn');
     if (cancelBioBtn) cancelBioBtn.onclick = () => { editingBio = false; render(); };
+    document.querySelectorAll('[data-follows]').forEach(el=>{
+      el.onclick = () => {
+        const [uid, tab] = el.getAttribute('data-follows').split('|');
+        view = { name:'follows', user: uid, tab };
+        render();
+      };
+    });
+  } else if (view.name === 'follows') {
+    profileEl.classList.remove('hidden');
+    profileEl.innerHTML = renderFollows(view.user, view.tab);
+    document.getElementById('followsBack').onclick = () => { view = { name:'profile', user: view.user }; render(); };
+    document.querySelectorAll('[data-followstab]').forEach(el=>{
+      el.onclick = () => { view.tab = el.getAttribute('data-followstab'); render(); };
+    });
+    document.querySelectorAll('[data-followuser]').forEach(el=>{
+      el.onclick = () => toggleFollow(el.getAttribute('data-followuser'));
+    });
+    document.querySelectorAll('#profileView [data-profile]').forEach(el=>{
+      el.onclick = () => { view = { name:'profile', user: el.getAttribute('data-profile') }; render(); };
+    });
+  } else if (view.name === 'postDetail') {
+    feedEl.classList.remove('hidden');
+    feedEl.innerHTML = renderPostDetail(view.post);
+    const back = document.getElementById('detailBack');
+    if (back) back.onclick = () => { view = detailReturn || { name:'feed' }; detailReturn = null; render(); };
+    bindPostEvents();
   } else if (view.name === 'search') {
     searchEl.classList.remove('hidden');
     searchEl.innerHTML = renderSearch();
@@ -787,7 +856,18 @@ function render(){
     notifsEl.classList.remove('hidden');
     notifsEl.innerHTML = renderNotifications();
     document.querySelectorAll('[data-notif-goto]').forEach(el=>{
-      el.onclick = () => { view = { name:'profile', user: el.getAttribute('data-notif-goto') }; render(); };
+      el.onclick = () => {
+        const pid = el.getAttribute('data-notif-post');
+        if (pid && postsCache.find(p=>p.id===pid)) {
+          detailReturn = { name:'notifications' };
+          view = { name:'postDetail', post: pid };
+          render();
+          loadComments(pid);
+        } else {
+          view = { name:'profile', user: el.getAttribute('data-notif-goto') };
+          render();
+        }
+      };
     });
   } else if (view.name === 'dms') {
     dmsEl.classList.remove('hidden');
@@ -948,8 +1028,8 @@ function renderProfile(uid){
         <div class="profileName">${esc(u.displayName)}${verifiedBadge(u)}</div>
         ${bioHTML}
         <div style="display:flex; gap:16px; margin-top:8px;">
-          <span class="dim"><b class="strongText">${(u.following||[]).length}</b> takip</span>
-          <span class="dim"><b class="strongText">${followerCount}</b> takipçi</span>
+          <span class="dim" style="cursor:pointer;" data-follows="${uid}|following"><b class="strongText">${(u.following||[]).length}</b> takip</span>
+          <span class="dim" style="cursor:pointer;" data-follows="${uid}|followers"><b class="strongText">${followerCount}</b> takipçi</span>
         </div>
       </div>
       ${!isMe ? `
@@ -960,8 +1040,47 @@ function renderProfile(uid){
     </div>
     <div class="divider"></div>
   `;
-  html += userPosts.length ? userPosts.map(renderPost).join("") : `<div class="emptyState">Henüz söz yok.</div>`;
+  let list = userPosts;
+  let pinnedHTML = "";
+  if (u.pinnedPost) {
+    const pp = postsCache.find(x => x.id === u.pinnedPost && x.authorUid === uid);
+    if (pp) {
+      pinnedHTML = `<div class="dim" style="font-size:12px; padding-top:6px;">📌 Sabitlenmiş söz</div>` + renderPost(pp);
+      list = userPosts.filter(x => x.id !== u.pinnedPost);
+    }
+  }
+  html += pinnedHTML;
+  html += list.length ? list.map(renderPost).join("") : (pinnedHTML ? "" : `<div class="emptyState">Henüz söz yok.</div>`);
   return html;
+}
+
+// ====== TAKİP LİSTELERİ ======
+function renderFollows(uid, tab){
+  const u = usersCache[uid] || { displayName: "Bilinmeyen" };
+  const followingIds = (usersCache[uid] && usersCache[uid].following) || [];
+  const followerIds = Object.entries(usersCache).filter(([id,v]) => (v.following||[]).includes(uid)).map(([id]) => id);
+  const ids = tab === 'followers' ? followerIds : followingIds;
+  return `
+    <button class="chatBack" id="followsBack">← ${esc(u.displayName)}</button>
+    <div class="feedTabs">
+      <button class="feedTab ${tab!=='followers'?'active':''}" data-followstab="following">Takip (${followingIds.length})</button>
+      <button class="feedTab ${tab==='followers'?'active':''}" data-followstab="followers">Takipçi (${followerIds.length})</button>
+    </div>
+    ${ids.length ? ids.map(id => {
+      const uu = usersCache[id] || { displayName: "Bilinmeyen" };
+      const iFollow = (currentUser.following||[]).includes(id);
+      return `<div class="userResultRow" style="cursor:default;">
+        <span data-profile="${id}" style="display:flex; align-items:center; gap:12px; flex:1; min-width:0; cursor:pointer;">
+          ${avatarHTML(uu.displayName, 44, "", uu.photoURL)}
+          <span style="min-width:0;">
+            <span style="font-weight:700; display:block;">${esc(uu.displayName)}${verifiedBadge(uu)}</span>
+            ${uu.bio ? `<span class="dim" style="display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(uu.bio)}</span>` : ""}
+          </span>
+        </span>
+        ${id !== currentUser.uid ? `<button class="${iFollow?'followingBtn':'followBtn'}" data-followuser="${id}" style="flex-shrink:0;">${iFollow?'Takiptesin':'Takip et'}</button>` : ""}
+      </div>`;
+    }).join("") : `<div class="emptyState">${tab==='followers' ? 'Henüz takipçi yok.' : 'Henüz kimseyi takip etmiyor.'}</div>`}
+  `;
 }
 
 function renderPost(p){
@@ -998,8 +1117,8 @@ function renderPost(p){
         <div style="flex:1; min-width:0;">
           <div style="display:flex; align-items:baseline; gap:6px; flex-wrap:wrap;">
             <button class="linkName" data-profile="${p.authorUid}">${esc(author.displayName)}${verifiedBadge(author)}</button>
-            <span class="dim">· ${timeAgo(p.createdAt)}</span>
-            ${p.authorUid===currentUser.uid ? `<button class="iconGhost" data-edit="${p.id}" title="Düzenle">✏️</button><button class="iconGhost" data-delete="${p.id}" title="Sil">🗑</button>` : ""}
+            <button class="linkName dim" data-open="${p.id}" style="font-weight:400; font-size:13px;" title="Sözü aç">· ${timeAgo(p.createdAt)}</button>
+            ${p.authorUid===currentUser.uid ? `<button class="iconGhost" data-pin="${p.id}" title="${currentUser.pinnedPost===p.id ? 'Sabitlemeyi kaldır' : 'Profilde sabitle'}" style="${currentUser.pinnedPost===p.id ? 'color:#C9A227;' : ''}">📌</button><button class="iconGhost" data-edit="${p.id}" title="Düzenle">✏️</button><button class="iconGhost" data-delete="${p.id}" title="Sil">🗑</button>` : ""}
           </div>
           ${editingPostId===p.id ? `
             <div style="margin-top:8px;">
@@ -1061,6 +1180,64 @@ function renderPoll(p){
   }).join("") + `<div class="dim" style="margin-top:2px;">${total} oy</div></div>`;
 }
 
+// ====== SÖZ DETAY SAYFASI ======
+function renderPostDetail(postId){
+  const p = postsCache.find(x => x.id === postId);
+  if (!p) {
+    return `<button class="chatBack" id="detailBack">← Geri</button>
+      <div class="emptyState">Söz bulunamadı ya da silinmiş.</div>`;
+  }
+  const author = usersCache[p.authorUid] || { displayName: "Bilinmeyen" };
+  const liked = (p.likes||[]).includes(currentUser.uid);
+  const retweeted = (p.retweets||[]).includes(currentUser.uid);
+  const bookmarked = (p.bookmarks||[]).includes(currentUser.uid);
+  const comments = commentsCache[p.id] || [];
+  return `
+    <button class="chatBack" id="detailBack">← Geri</button>
+    <div style="padding:6px 0;">
+      <div style="display:flex; align-items:center; gap:10px;">
+        ${avatarHTML(author.displayName, 46, `data-profile="${p.authorUid}"`, author.photoURL)}
+        <div style="flex:1; min-width:0;">
+          <button class="linkName" data-profile="${p.authorUid}" style="font-size:15px;">${esc(author.displayName)}${verifiedBadge(author)}</button>
+          ${(usersCache[p.authorUid]||{}).bio ? `<div class="dim" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(usersCache[p.authorUid].bio)}</div>` : ""}
+        </div>
+        ${p.authorUid===currentUser.uid ? `<button class="iconGhost" data-pin="${p.id}" title="${currentUser.pinnedPost===p.id ? 'Sabitlemeyi kaldır' : 'Profilde sabitle'}" style="${currentUser.pinnedPost===p.id ? 'color:#C9A227;' : ''}">📌</button><button class="iconGhost" data-delete="${p.id}" title="Sil">🗑</button>` : ""}
+      </div>
+      ${p.text ? `<div class="postText" style="font-size:18px; margin-top:12px; line-height:1.5;">${linkify(p.text)}${p.edited ? ` <span class="dim" style="font-size:11px;">(düzenlendi)</span>` : ""}</div>` : ""}
+      ${p.imageData ? `<img class="postImage" src="${p.imageData}" style="max-height:none;" />` : ""}
+      ${p.quoteOf ? renderQuoteEmbed(p.quoteOf) : ""}
+      ${p.poll ? renderPoll(p) : ""}
+      <div class="dim" style="margin-top:12px; font-size:13px;">${fullTime(p.createdAt)}</div>
+      <div class="divider" style="margin:12px 0;"></div>
+      <div class="actions" style="margin-top:0;">
+        <span class="actionBtn" style="cursor:default;">💬 ${comments.length}</span>
+        <button class="actionBtn ${retweeted?'retweeted':''}" data-retweet="${p.id}">🔁 ${(p.retweets||[]).length}</button>
+        <button class="actionBtn" data-quote="${p.id}" title="Alıntıla">❝</button>
+        <button class="actionBtn ${liked?'liked':''}" data-like="${p.id}">❤ ${(p.likes||[]).length}</button>
+        <button class="actionBtn ${bookmarked?'bookmarked':''}" data-bookmark="${p.id}">🔖</button>
+      </div>
+      <div class="divider" style="margin:12px 0;"></div>
+      <div style="font-weight:700; font-size:15px; margin-bottom:10px;">Yanıtlar ${comments.length ? `(${comments.length})` : ""}</div>
+      ${comments.length ? comments.map(c => {
+        const cu = usersCache[c.authorUid] || { displayName: "Bilinmeyen" };
+        return `<div class="commentRow" style="padding-left:0;">
+          ${avatarHTML(cu.displayName, 32, `data-profile="${c.authorUid}"`, cu.photoURL)}
+          <div style="flex:1; min-width:0;">
+            <button class="linkName" data-profile="${c.authorUid}" style="font-size:13px;">${esc(cu.displayName)}${verifiedBadge(cu)}</button>
+            <span class="dim">· ${timeAgo(c.createdAt)}</span>
+            ${c.authorUid===currentUser.uid ? `<button class="iconGhost" data-delete-comment="${p.id}|${c.id}" title="Sil">🗑</button>` : ""}
+            <div style="font-size:14px; margin-top:2px;">${linkify(c.text)}</div>
+          </div>
+        </div>`;
+      }).join("") : `<div class="emptyState" style="padding:24px 0;">Henüz yanıt yok. İlk yanıtı sen yaz.</div>`}
+      <div class="replyInputRow">
+        <input id="reply-${p.id}" placeholder="Yanıt yaz…" maxlength="280" />
+        <button class="smallBtn" data-comment="${p.id}" style="background:#C9A227; color:#0E1116; font-weight:700;">Gönder</button>
+      </div>
+    </div>
+  `;
+}
+
 function bindPostEvents(){
   document.querySelectorAll('[data-profile]').forEach(el=>{
     el.onclick = () => { view = { name:'profile', user: el.getAttribute('data-profile') }; render(); };
@@ -1100,8 +1277,31 @@ function bindPostEvents(){
   document.querySelectorAll('[data-cancel-edit]').forEach(el=>{
     el.onclick = () => { editingPostId = null; render(); };
   });
+  function openPostDetail(id){
+    if (view.name !== 'postDetail') detailReturn = view;
+    view = { name:'postDetail', post: id };
+    render();
+    loadComments(id);
+    window.scrollTo(0, 0);
+  }
   document.querySelectorAll('[data-reply]').forEach(el=>{
-    el.onclick = () => toggleReplyBox(el.getAttribute('data-reply'));
+    el.onclick = () => openPostDetail(el.getAttribute('data-reply'));
+  });
+  document.querySelectorAll('[data-open]').forEach(el=>{
+    el.onclick = () => openPostDetail(el.getAttribute('data-open'));
+  });
+  document.querySelectorAll('[data-pin]').forEach(el=>{
+    el.onclick = () => togglePin(el.getAttribute('data-pin'));
+  });
+  document.querySelectorAll('[data-mention]').forEach(el=>{
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const tag = el.getAttribute('data-mention');
+      const uid = findUserByMention(tag);
+      if (uid) { view = { name:'profile', user: uid }; }
+      else { searchQuery = tag; view = { name:'search' }; }
+      render();
+    };
   });
   document.querySelectorAll('[data-comment]').forEach(el=>{
     el.onclick = () => addComment(el.getAttribute('data-comment'));
@@ -1226,6 +1426,7 @@ function notifText(n){
   if (n.type === 'comment') return `<b>${name}</b> sözüne yanıt yazdı`;
   if (n.type === 'follow') return `<b>${name}</b> seni takip etmeye başladı`;
   if (n.type === 'quote') return `<b>${name}</b> sözünü alıntıladı`;
+  if (n.type === 'mention') return `<b>${name}</b> senden bahsetti`;
   return `<b>${name}</b> bir işlem yaptı`;
 }
 function notifIcon(type){
@@ -1233,6 +1434,7 @@ function notifIcon(type){
   if (type === 'comment') return '💬';
   if (type === 'follow') return '➕';
   if (type === 'quote') return '❝';
+  if (type === 'mention') return '@';
   return '🔔';
 }
 function renderNotifications(){
@@ -1240,7 +1442,7 @@ function renderNotifications(){
     return `<div class="emptyState">Henüz bildirim yok.</div>`;
   }
   return notificationsCache.map(n => `
-    <div class="notifItem ${n.read ? '' : 'unread'}" data-notif-goto="${n.fromUid}">
+    <div class="notifItem ${n.read ? '' : 'unread'}" data-notif-goto="${n.fromUid}" data-notif-post="${n.postId || ''}">
       <div class="notifIcon">${notifIcon(n.type)}</div>
       <div style="flex:1;">
         <div style="font-size:14px;">${notifText(n)}</div>

@@ -79,6 +79,14 @@
   .bioEditBox textarea { font-size:14px; }
   .editBioBtn { background:none; border:1px solid #2A2F38; color:#8B8F98; border-radius:14px; padding:4px 12px; font-size:12px; cursor:pointer; margin-top:8px; }
   .userResultRow { display:flex; align-items:center; gap:12px; padding:12px 0; border-bottom:1px solid #1D2128; cursor:pointer; }
+  .feedTabs { display:flex; border-bottom:1px solid #1D2128; margin-bottom:4px; }
+  .feedTab { flex:1; background:none; border:none; color:#8B8F98; font-size:14px; font-weight:600; padding:12px 0; cursor:pointer; border-bottom:2px solid transparent; }
+  .feedTab.active { color:#C9A227; border-bottom-color:#C9A227; }
+  .trendBox { background:#171B21; border:1px solid #262B33; border-radius:14px; padding:14px 16px; margin-bottom:16px; }
+  .trendTitle { font-family:Georgia,serif; font-size:16px; font-weight:700; margin-bottom:8px; }
+  .trendRow { display:flex; justify-content:space-between; align-items:center; padding:7px 0; cursor:pointer; border:none; background:none; width:100%; text-align:left; }
+  .trendTag { color:#C9A227; font-weight:700; font-size:14px; }
+  .trendCount { color:#5B5F66; font-size:12px; }
 </style>
 </head>
 <body>
@@ -164,6 +172,7 @@ let uploadingPhoto = false;
 let notificationsCache = [];
 let searchQuery = "";
 let editingBio = false;
+let feedFilter = "all"; // "all" | "following"
 
 // ====== HELPERS ======
 function timeAgo(ts){
@@ -539,6 +548,9 @@ function render(){
     document.getElementById('composerImgInput').onchange = (e) => handleComposerImagePick(e.target);
     const removeBtn = document.getElementById('removeImgBtn');
     if (removeBtn) removeBtn.onclick = removeComposerImage;
+    document.querySelectorAll('[data-feedtab]').forEach(el=>{
+      el.onclick = () => preserveComposerTextAcrossRender(() => { feedFilter = el.getAttribute('data-feedtab'); });
+    });
     bindPostEvents();
   } else if (view.name === 'profile') {
     profileEl.classList.remove('hidden');
@@ -600,12 +612,54 @@ function renderFeed(){
     </div>
     <div class="divider"></div>
   `;
-  if (postsCache.length === 0) {
-    html += `<div class="emptyState">Henüz hiç söz söylenmemiş. İlk sözü sen söyle.</div>`;
+
+  html += renderTrends();
+
+  html += `
+    <div class="feedTabs">
+      <button class="feedTab ${feedFilter==='all'?'active':''}" data-feedtab="all">Herkes</button>
+      <button class="feedTab ${feedFilter==='following'?'active':''}" data-feedtab="following">Takip Ettiklerim</button>
+    </div>
+  `;
+
+  let posts = postsCache;
+  if (feedFilter === 'following') {
+    const fset = new Set([...(me.following||[]), me.uid]);
+    posts = postsCache.filter(p => fset.has(p.authorUid));
+  }
+
+  if (posts.length === 0) {
+    html += feedFilter === 'following'
+      ? `<div class="emptyState">Takip ettiklerinden henüz söz yok.<br>Ara'dan yeni insanlar bul.</div>`
+      : `<div class="emptyState">Henüz hiç söz söylenmemiş. İlk sözü sen söyle.</div>`;
   } else {
-    html += postsCache.map(renderPost).join("");
+    html += posts.map(renderPost).join("");
   }
   return html;
+}
+
+// ====== GÜNDEM (TREND HASHTAGLER) ======
+function renderTrends(){
+  const counts = {};
+  postsCache.forEach(p => {
+    const tags = (p.text||"").match(/#[\wğüşıöçĞÜŞİÖÇ]+/g) || [];
+    new Set(tags.map(t => t.toLowerCase())).forEach(t => {
+      counts[t] = (counts[t]||0) + 1;
+    });
+  });
+  const top = Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  if (top.length === 0) return "";
+  return `
+    <div class="trendBox">
+      <div class="trendTitle">📈 Gündem</div>
+      ${top.map(([tag, n]) => `
+        <button class="trendRow" data-hashtag="${esc(tag.slice(1))}">
+          <span class="trendTag">${esc(tag)}</span>
+          <span class="trendCount">${n} söz</span>
+        </button>
+      `).join("")}
+    </div>
+  `;
 }
 
 function renderProfile(uid){

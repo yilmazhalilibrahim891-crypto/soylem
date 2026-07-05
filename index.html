@@ -87,6 +87,16 @@
   .trendRow { display:flex; justify-content:space-between; align-items:center; padding:7px 0; cursor:pointer; border:none; background:none; width:100%; text-align:left; }
   .trendTag { color:#C9A227; font-weight:700; font-size:14px; }
   .trendCount { color:#5B5F66; font-size:12px; }
+  .dmRow { display:flex; gap:12px; align-items:center; padding:12px 0; border-bottom:1px solid #1D2128; cursor:pointer; }
+  .dmPreview { color:#8B8F98; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .chatWrap { display:flex; flex-direction:column; gap:6px; padding:12px 0; }
+  .bubble { max-width:78%; padding:9px 13px; border-radius:16px; font-size:14px; line-height:1.4; word-break:break-word; }
+  .bubbleMe { align-self:flex-end; background:#C9A227; color:#0E1116; border-bottom-right-radius:4px; }
+  .bubbleThem { align-self:flex-start; background:#1D2128; color:#ECE8DD; border-bottom-left-radius:4px; }
+  .bubbleTime { font-size:10px; opacity:0.65; margin-top:2px; text-align:right; }
+  .chatInputBar { display:flex; gap:8px; margin-top:10px; }
+  .chatBack { background:none; border:none; color:#C9A227; cursor:pointer; font-size:14px; padding:6px 0; }
+  .actionBtn.bookmarked { color:#C9A227; }
 </style>
 </head>
 <body>
@@ -129,6 +139,8 @@
     <button class="navBtn active" id="navFeed">🏠<span class="navLabel" style="margin-left:8px;">Ana Akış</span></button>
     <button class="navBtn" id="navSearch">🔍<span class="navLabel" style="margin-left:8px;">Ara</span></button>
     <button class="navBtn" id="navNotifs">🔔<span class="navLabel" style="margin-left:8px;">Bildirimler</span><span class="navBadge hidden" id="notifBadge">0</span></button>
+    <button class="navBtn" id="navDMs">✉️<span class="navLabel" style="margin-left:8px;">Mesajlar</span><span class="navBadge hidden" id="dmBadge">0</span></button>
+    <button class="navBtn" id="navSaved">🔖<span class="navLabel" style="margin-left:8px;">Kaydedilenler</span></button>
     <button class="navBtn" id="navProfile">👤<span class="navLabel" style="margin-left:8px;">Profilim</span></button>
     <button class="navBtn" id="navLogout">🚪<span class="navLabel" style="margin-left:8px;">Çıkış</span></button>
   </div>
@@ -138,6 +150,8 @@
     <div id="profileView" class="hidden"></div>
     <div id="searchView" class="hidden"></div>
     <div id="notifsView" class="hidden"></div>
+    <div id="dmsView" class="hidden"></div>
+    <div id="savedView" class="hidden"></div>
   </div>
 </div>
 
@@ -173,6 +187,9 @@ let notificationsCache = [];
 let searchQuery = "";
 let editingBio = false;
 let feedFilter = "all"; // "all" | "following"
+let dmsCache = [];
+let editingPostId = null;
+let chatDraft = "";
 
 // ====== HELPERS ======
 function timeAgo(ts){
@@ -281,7 +298,7 @@ function friendlyAuthError(code){
 document.getElementById('navLogout').onclick = () => auth.signOut();
 
 // ====== AUTH STATE ======
-let unsubUsers = null, unsubPosts = null, unsubNotifs = null;
+let unsubUsers = null, unsubPosts = null, unsubNotifs = null, unsubDMs = null;
 auth.onAuthStateChanged(async (user) => {
   document.getElementById('loadingScreen').classList.add('hidden');
   if (user) {
@@ -298,6 +315,7 @@ auth.onAuthStateChanged(async (user) => {
     if (unsubUsers) unsubUsers();
     if (unsubPosts) unsubPosts();
     if (unsubNotifs) unsubNotifs();
+    if (unsubDMs) unsubDMs();
     document.getElementById('appShell').classList.add('hidden');
     document.getElementById('loginScreen').classList.remove('hidden');
   }
@@ -327,6 +345,48 @@ function startListeners(){
       updateNotifBadge();
       if (view.name === 'notifications') render();
     }, err => {});
+
+  unsubDMs = db.collection('messages')
+    .where('participants', 'array-contains', currentUser.uid)
+    .onSnapshot(snap => {
+      dmsCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      dmsCache.sort((a,b) => (a.createdAt||0) - (b.createdAt||0));
+      updateDMBadge();
+      if (view.name === 'dms' || view.name === 'chat') render();
+    }, err => {});
+}
+
+function updateDMBadge(){
+  const badge = document.getElementById('dmBadge');
+  if (!badge) return;
+  const unread = dmsCache.filter(m => m.toUid === currentUser.uid && !m.read).length;
+  badge.textContent = unread > 9 ? '9+' : String(unread);
+  badge.classList.toggle('hidden', unread === 0);
+}
+
+async function sendDM(toUid){
+  const input = document.getElementById('chatInput');
+  const text = input ? input.value.trim() : "";
+  if (!text) return;
+  try {
+    await db.collection('messages').add({
+      participants: [currentUser.uid, toUid],
+      fromUid: currentUser.uid, toUid, text,
+      createdAt: Date.now(), read: false
+    });
+    chatDraft = "";
+    if (input) input.value = "";
+  } catch(e){ showError("Mesaj gönderilemedi."); }
+}
+
+async function markChatRead(otherUid){
+  const unread = dmsCache.filter(m => m.fromUid === otherUid && m.toUid === currentUser.uid && !m.read);
+  if (unread.length === 0) return;
+  try {
+    const batch = db.batch();
+    unread.forEach(m => batch.update(db.collection('messages').doc(m.id), { read: true }));
+    await batch.commit();
+  } catch(e){}
 }
 
 function updateNotifBadge(){
@@ -361,6 +421,8 @@ document.getElementById('navFeed').onclick = () => { view = { name: "feed" }; re
 document.getElementById('navProfile').onclick = () => { view = { name: "profile", user: currentUser.uid }; render(); };
 document.getElementById('navSearch').onclick = () => { view = { name: "search" }; render(); };
 document.getElementById('navNotifs').onclick = () => { view = { name: "notifications" }; render(); markAllNotifsRead(); };
+document.getElementById('navDMs').onclick = () => { view = { name: "dms" }; render(); };
+document.getElementById('navSaved').onclick = () => { view = { name: "saved" }; render(); };
 
 // ====== ACTIONS ======
 async function postTweet(){
@@ -458,6 +520,30 @@ async function deletePost(postId){
   catch(e){ showError("Silinemedi."); }
 }
 
+async function toggleBookmark(postId){
+  const ref = db.collection('posts').doc(postId);
+  const post = postsCache.find(p=>p.id===postId);
+  if (!post) return;
+  const has = (post.bookmarks||[]).includes(currentUser.uid);
+  try {
+    await ref.update({
+      bookmarks: has ? firebase.firestore.FieldValue.arrayRemove(currentUser.uid)
+                     : firebase.firestore.FieldValue.arrayUnion(currentUser.uid)
+    });
+  } catch(e){ showError("İşlem başarısız."); }
+}
+
+async function saveEditPost(postId){
+  const ta = document.getElementById('editInput-'+postId);
+  if (!ta) return;
+  const text = ta.value.trim();
+  if (!text) return;
+  try {
+    await db.collection('posts').doc(postId).update({ text, edited: true });
+    editingPostId = null;
+  } catch(e){ showError("Düzenlenemedi."); }
+}
+
 async function addComment(postId){
   const input = document.getElementById('reply-'+postId);
   const text = input.value.trim();
@@ -527,14 +613,20 @@ function render(){
   if (view.name === 'profile' && view.user === currentUser.uid) document.getElementById('navProfile').classList.add('active');
   if (view.name === 'search') document.getElementById('navSearch').classList.add('active');
   if (view.name === 'notifications') document.getElementById('navNotifs').classList.add('active');
+  if (view.name === 'dms' || view.name === 'chat') document.getElementById('navDMs').classList.add('active');
+  if (view.name === 'saved') document.getElementById('navSaved').classList.add('active');
   updateNotifBadge();
+  updateDMBadge();
 
   const feedEl = document.getElementById('feedView');
   const profileEl = document.getElementById('profileView');
   const searchEl = document.getElementById('searchView');
   const notifsEl = document.getElementById('notifsView');
+  const dmsEl = document.getElementById('dmsView');
+  const savedEl = document.getElementById('savedView');
   feedEl.classList.add('hidden'); profileEl.classList.add('hidden');
   searchEl.classList.add('hidden'); notifsEl.classList.add('hidden');
+  dmsEl.classList.add('hidden'); savedEl.classList.add('hidden');
 
   if (view.name === 'feed') {
     feedEl.classList.remove('hidden');
@@ -558,6 +650,8 @@ function render(){
     bindPostEvents();
     const followBtn = document.getElementById('followBtn');
     if (followBtn) followBtn.onclick = () => toggleFollow(view.user);
+    const msgBtn = document.getElementById('msgBtn');
+    if (msgBtn) msgBtn.onclick = () => { chatDraft = ""; view = { name:'chat', user: view.user }; render(); };
     const photoBtn = document.getElementById('profilePhotoBtn');
     const photoInput = document.getElementById('profilePhotoInput');
     if (photoBtn && photoInput) {
@@ -585,6 +679,29 @@ function render(){
     document.querySelectorAll('[data-notif-goto]').forEach(el=>{
       el.onclick = () => { view = { name:'profile', user: el.getAttribute('data-notif-goto') }; render(); };
     });
+  } else if (view.name === 'dms') {
+    dmsEl.classList.remove('hidden');
+    dmsEl.innerHTML = renderDMList();
+    document.querySelectorAll('[data-chat]').forEach(el=>{
+      el.onclick = () => { chatDraft = ""; view = { name:'chat', user: el.getAttribute('data-chat') }; render(); };
+    });
+  } else if (view.name === 'chat') {
+    dmsEl.classList.remove('hidden');
+    dmsEl.innerHTML = renderChat(view.user);
+    document.getElementById('chatBack').onclick = () => { view = { name:'dms' }; render(); };
+    document.getElementById('chatSendBtn').onclick = () => sendDM(view.user);
+    const ci = document.getElementById('chatInput');
+    ci.value = chatDraft;
+    ci.oninput = (e) => { chatDraft = e.target.value; };
+    ci.onkeydown = (e) => { if (e.key === 'Enter') sendDM(view.user); };
+    markChatRead(view.user);
+    window.scrollTo(0, document.body.scrollHeight);
+  } else if (view.name === 'saved') {
+    savedEl.classList.remove('hidden');
+    const saved = postsCache.filter(p => (p.bookmarks||[]).includes(currentUser.uid));
+    savedEl.innerHTML = `<h2 style="font-family:Georgia,serif; font-size:20px; margin-bottom:8px;">🔖 Kaydedilenler</h2>` +
+      (saved.length ? saved.map(renderPost).join("") : `<div class="emptyState">Henüz kaydedilen söz yok.<br>Sözlerdeki 🔖 ikonuna basarak kaydet.</div>`);
+    bindPostEvents();
   }
 }
 
@@ -701,7 +818,11 @@ function renderProfile(uid){
           <span class="dim"><b style="color:#ECE8DD;">${followerCount}</b> takipçi</span>
         </div>
       </div>
-      ${!isMe ? `<button id="followBtn" class="${iFollow?'followingBtn':'followBtn'}">${iFollow?'Takiptesin':'Takip et'}</button>` : ""}
+      ${!isMe ? `
+        <div style="display:flex; flex-direction:column; gap:8px; align-items:flex-end;">
+          <button id="followBtn" class="${iFollow?'followingBtn':'followBtn'}">${iFollow?'Takiptesin':'Takip et'}</button>
+          <button id="msgBtn" class="followingBtn">✉️ Mesaj</button>
+        </div>` : ""}
     </div>
     <div class="divider"></div>
   `;
@@ -713,6 +834,7 @@ function renderPost(p){
   const author = usersCache[p.authorUid] || { displayName: "Bilinmeyen" };
   const liked = (p.likes||[]).includes(currentUser.uid);
   const retweeted = (p.retweets||[]).includes(currentUser.uid);
+  const bookmarked = (p.bookmarks||[]).includes(currentUser.uid);
   const comments = commentsCache[p.id] || [];
   let replyHTML = "";
   if (openReplyId === p.id) {
@@ -743,14 +865,23 @@ function renderPost(p){
           <div style="display:flex; align-items:baseline; gap:6px; flex-wrap:wrap;">
             <button class="linkName" data-profile="${p.authorUid}">${esc(author.displayName)}</button>
             <span class="dim">· ${timeAgo(p.createdAt)}</span>
-            ${p.authorUid===currentUser.uid ? `<button class="iconGhost" data-delete="${p.id}" title="Sil">🗑</button>` : ""}
+            ${p.authorUid===currentUser.uid ? `<button class="iconGhost" data-edit="${p.id}" title="Düzenle">✏️</button><button class="iconGhost" data-delete="${p.id}" title="Sil">🗑</button>` : ""}
           </div>
-          ${p.text ? `<div class="postText">${linkify(p.text)}</div>` : ""}
+          ${editingPostId===p.id ? `
+            <div style="margin-top:8px;">
+              <textarea id="editInput-${p.id}" rows="3" maxlength="280">${esc(p.text||"")}</textarea>
+              <div style="display:flex; gap:8px; margin-top:6px;">
+                <button class="smallBtn" data-save-edit="${p.id}" style="background:#C9A227; color:#0E1116; font-weight:700;">Kaydet</button>
+                <button class="smallBtn" data-cancel-edit="${p.id}" style="background:transparent; border:1px solid #2A2F38;">İptal</button>
+              </div>
+            </div>`
+          : (p.text ? `<div class="postText">${linkify(p.text)}${p.edited ? ` <span class="dim" style="font-size:11px;">(düzenlendi)</span>` : ""}</div>` : "")}
           ${p.imageData ? `<img class="postImage" src="${p.imageData}" />` : ""}
           <div class="actions">
             <button class="actionBtn" data-reply="${p.id}">💬 ${comments.length || ''}</button>
             <button class="actionBtn ${retweeted?'retweeted':''}" data-retweet="${p.id}">🔁 ${(p.retweets||[]).length}</button>
             <button class="actionBtn ${liked?'liked':''}" data-like="${p.id}">❤ ${(p.likes||[]).length}</button>
+            <button class="actionBtn ${bookmarked?'bookmarked':''}" data-bookmark="${p.id}">🔖</button>
           </div>
           ${replyHTML}
         </div>
@@ -771,6 +902,18 @@ function bindPostEvents(){
   });
   document.querySelectorAll('[data-delete]').forEach(el=>{
     el.onclick = () => deletePost(el.getAttribute('data-delete'));
+  });
+  document.querySelectorAll('[data-bookmark]').forEach(el=>{
+    el.onclick = () => toggleBookmark(el.getAttribute('data-bookmark'));
+  });
+  document.querySelectorAll('[data-edit]').forEach(el=>{
+    el.onclick = () => { editingPostId = el.getAttribute('data-edit'); render(); };
+  });
+  document.querySelectorAll('[data-save-edit]').forEach(el=>{
+    el.onclick = () => saveEditPost(el.getAttribute('data-save-edit'));
+  });
+  document.querySelectorAll('[data-cancel-edit]').forEach(el=>{
+    el.onclick = () => { editingPostId = null; render(); };
   });
   document.querySelectorAll('[data-reply]').forEach(el=>{
     el.onclick = () => toggleReplyBox(el.getAttribute('data-reply'));
@@ -834,6 +977,60 @@ function renderSearchResultsOnly(){
   document.querySelectorAll('#searchResults [data-profile]').forEach(elm=>{
     elm.onclick = () => { view = { name:'profile', user: elm.getAttribute('data-profile') }; render(); };
   });
+}
+
+// ====== MESAJLAR (DM) ======
+function renderDMList(){
+  const convos = {};
+  dmsCache.forEach(m => {
+    const other = m.fromUid === currentUser.uid ? m.toUid : m.fromUid;
+    if (!convos[other]) convos[other] = { last: null, unread: 0 };
+    convos[other].last = m; // artan sıralı, son mesaj kalır
+    if (m.toUid === currentUser.uid && !m.read) convos[other].unread++;
+  });
+  const entries = Object.entries(convos).sort((a,b) => b[1].last.createdAt - a[1].last.createdAt);
+  let html = `<h2 style="font-family:Georgia,serif; font-size:20px; margin-bottom:8px;">✉️ Mesajlar</h2>`;
+  if (entries.length === 0) {
+    return html + `<div class="emptyState">Henüz mesaj yok.<br>Bir profile girip "✉️ Mesaj"a bas.</div>`;
+  }
+  return html + entries.map(([uid, c]) => {
+    const u = usersCache[uid] || { displayName: "Bilinmeyen" };
+    return `
+      <div class="dmRow" data-chat="${uid}">
+        ${avatarHTML(u.displayName, 44, "", u.photoURL)}
+        <div style="flex:1; min-width:0;">
+          <div style="font-weight:700;">${esc(u.displayName)} ${c.unread ? `<span class="navBadge" style="position:static; margin-left:6px;">${c.unread}</span>` : ""}</div>
+          <div class="dmPreview">${c.last.fromUid===currentUser.uid ? "Sen: " : ""}${esc(c.last.text)}</div>
+        </div>
+        <span class="dim">${timeAgo(c.last.createdAt)}</span>
+      </div>`;
+  }).join("");
+}
+
+function renderChat(otherUid){
+  const u = usersCache[otherUid] || { displayName: "Bilinmeyen" };
+  const msgs = dmsCache.filter(m =>
+    (m.fromUid === otherUid && m.toUid === currentUser.uid) ||
+    (m.fromUid === currentUser.uid && m.toUid === otherUid)
+  );
+  return `
+    <button class="chatBack" id="chatBack">← Mesajlar</button>
+    <div style="display:flex; align-items:center; gap:10px; padding:6px 0 10px; border-bottom:1px solid #1D2128;">
+      ${avatarHTML(u.displayName, 36, "", u.photoURL)}
+      <div style="font-weight:700;">${esc(u.displayName)}</div>
+    </div>
+    <div class="chatWrap">
+      ${msgs.length ? msgs.map(m => `
+        <div class="bubble ${m.fromUid===currentUser.uid ? 'bubbleMe' : 'bubbleThem'}">
+          ${esc(m.text)}
+          <div class="bubbleTime">${timeAgo(m.createdAt)}</div>
+        </div>`).join("") : `<div class="emptyState">İlk mesajı sen gönder.</div>`}
+    </div>
+    <div class="chatInputBar">
+      <input id="chatInput" placeholder="Mesaj yaz…" maxlength="500" />
+      <button class="smallBtn" id="chatSendBtn" style="background:#C9A227; color:#0E1116; font-weight:700;">Gönder</button>
+    </div>
+  `;
 }
 
 // ====== BİLDİRİMLER ======
